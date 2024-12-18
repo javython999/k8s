@@ -61,11 +61,11 @@
 ### 2.1.1 버추얼박스
 버추얼박스는 현존하는 대부분의 운영 체제를 게스트 운영 체제로 사용할 수 있다.
 
-## 2.1.2 베이그런트로 랩 환경 구축하기
+### 2.1.2 베이그런트로 랩 환경 구축하기
 베이그런트는 사용자의 요구에 맞게 시스템 자원을 할당, 배치, 배포해 두었다가 필요할 때 시스템을 사용할 수 있는 상태로 만들어 준다.
 이를 프로비저닝(Provisioning)이라 한다.
 
-## 2.1.3 베이그런트 구성하고 테스트 하기
+### 2.1.3 베이그런트 구성하고 테스트 하기
 * 자주 사용하는 베이그런트 명령어
 
 `vagrant init`: 프로비저닝을 위한 기초 파일을 생성한다.  
@@ -90,7 +90,7 @@
 ## 2.2 베이그런트로 테스트 환경 구축하기
 Vagrantfile을 수정해 원하는 구성이 자동으로 CentOS에 입력되도록 해보겠다.
 
-## 2.2.1 가상 머신에 필요한 설정 자동으로 구성하기
+### 2.2.1 가상 머신에 필요한 설정 자동으로 구성하기
 Vagrantfile은 `ruby`라는 언어로 작성한다.
 
 ```ruby
@@ -124,7 +124,7 @@ end
 * 15번 라인: 호스트와 게스트 사이에 디렉터리 동기화가 이뤄지지 않게 설정
 * 16~17 라인: 설정 작업 (do |config|, do |cfg|)이 종료되었음을 `end` 구문으로 명시
 
-## 2.2.2 가상 머신에 추가 패키지 설치하기
+### 2.2.2 가상 머신에 추가 패키지 설치하기
 Vagrantfile을 통해 CentOS에 호스트 네임, IP 등을 자동으로 설정했다. 이번에는 CentOS에 필요한 패키지를 설치해보겠다.
 
 1. Vagrantfile 수정
@@ -161,13 +161,133 @@ Vagrantfile이 위치한 디렉터리에 추가 패키지를 설치하기 위한
 
 3. `vagrant provision` 명령어 실행
 
-## 2.3 터미널 프로그램으로 가상 머신 접속하기
+### 2.2.3 가상 머신 추가 구성
 
+```ruby
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
 
+Vagrant.configure("2") do |config|
+  config.vm.define "m-k8s" do |cfg|
+    cfg.vm.box = "sysnet4admin/CentOS-k8s"
+    cfg.vm.provider "virtualbox" do |vb|
+      vb.name = "m-k8s(github_SysNet4Admin)"
+      vb.cpus = 2
+      vb.memory = 2048
+      vb.customize ["modifyvm", :id, "--groups", "/k8s-SM(github_SysNet4Admin)"]
+    end
+    cfg.vm.host_name = "m-k8s"
+    cfg.vm.network "private_network", ip: "192.168.1.10"
+    cfg.vm.network "forwarded_port", guest: 22, host:60010, auto_corrent: true, id: "ssh"
+    cfg.vm.synced_folder "../data", "/vagrant", disabled: true
+    cfg.vm.provision "shell", path: "install_pkg.sh"
+    cfg.vm.provision "file", source: "ping_2_nds.sh", destination: "ping_2_nds.sh"
+    cfg.vm.provision "shell", path: "config.sh"
+  end
+
+  #=============#
+  # Added Nodes #
+  #=============#
+
+  (1..3).each do |i| # 1부터 3까지 3개의 인자를 반복해 i로 입력
+    config.vm.define "w#{i}-k8s" do |cfg|
+      cfg.vm.box = "sysnet4admin/CentOS-k8s"
+      cfg.vm.provider "virtualbox" do |vb|
+        vb.name = "w#{i}-k8s(github_SysNet4Admin)"
+        vb.cpus = 1
+        vb.memory = 1024
+        vb.customize ["modifyvm", :id, "--groups", "/k8s-SM(github_SysNet4Admin)"]
+      end
+      cfg.vm.host_name = "w#{i}-k8s"
+      cfg.vm.network "private_network", ip: "192.168.1.10#{i}"
+      cfg.vm.network "forwarded_port", guest: 22, host: "6010#{i}", auto_corrent: true, id: "ssh"
+      cfg.vm.synced_folder "../data", "/vagrant", disabled: true
+      cfg.vm.provision "shell", path: "install_pkg.sh"
+    end
+  end
+end
+```
+* 18 라인: 파일을 게스트 운영체제에 전달하기 위해 "shell"이 아닌 "file" 구문으로 변경.
+* 19 라인: `config.sh`를 게스트에서 실행
+* 26~37 라인: 추가한 3대의 CentOS에 대한 구성 
+
+```shell
+#!/usr/bin/env bash
+# install packages
+yum install epel-release -y
+yum install vim-enhanced -y
+```
+
+```shell
+# ping 3 times per nodes
+pring 192.168.1.101 -c 3
+pring 192.168.1.102 -c 3
+pring 192.168.1.103 -c 3
+```
+
+```shell
+#!/usr/bin/env bash
+# modfiy permission
+chmod 744 ./ping_2_nds.sh
+```
+
+1. `vagrant up` 실행
+2. `vagrant ssh m-k8s`
+3. `./ping_2_nds.sh`
+4. `exit`
 
 ---
 # 3. 컨테이너를 다루는 표준 아키텍처, 쿠버네티스
+**컨테이너 인프라 환경**이란 리눅스 운영 체제의 커널 하나에서 여러 개의 컨테이너가 격리된 상태로 실행되는 인프라 환경을 말한다.
+가상화 환경에서는 각각의 가상 머신이 모두 독립적인 운영 체제 커널을 가지고 있어야 하기 때문에 그만큼 자원을 더 소모해야 하고 성능이 떨어진다.
+하지만 컨테이너 인프라 환경은 운영 체제 커널 하나에 컨테이너 여러 개가 격리된 형태로 실행되기 때문에 자원을 효율적으로 사용할 수 있고 거치는 단계가 적어 속도도 빠르다.
 
+## 3.1 쿠버네티스 이해하기
+쿠버네티스는 컨테이너 오케스트레이션을 위한 솔루션이다.
+오케스트레이션이란 복잡한 단계를 관리하고 요소들의 유기적인 관계를 미리 정의해 손쉽게 사용하도록 서비스를 제공하는 것을 의미한다.
+
+### 3.1.1 왜 쿠버네티스일까?
+다른 오케스트레이션 솔루션보다는 시작하는데 어려움이 있지만, 쉽게 사용할 수 있도록 도와주는 도구들이 있어 설치가 쉬워지는 추세.
+모든 벤더와 오픈 소스 진영 모두에서 쿠버네티스를 지원하고 그에 맞게 통합 개발하고 있다.
+다양한 종류의 솔루션이 쿠버네티스에 통합되고 있다.
+
+### 3.1.2 쿠버네티스 구성 방법
+1. 퍼블릭 클라우드 업체에서 제공하는 관리형 쿠버네티스인 EKS(Amazon Elastic Kubernates Service), AKS(Azure Kubernetes Service), GKE(Google Kubernetes Engine) 등을 사용한다. 구성이 이미 다 갖춰져 있고 마스터 노드를 클라우드 업체에서 관리하기 때문에 학습용으로는 적합하지 않다.
+2. 수세의 Rancher, 레드햇의 OpenShift와 같은 플랫폼에서 제공하는 설치형 쿠버네티스를 사용. 유료라 쉽게 접근하기 어렵다.
+3. 사용하는 시스템에 쿠버네티스 클러스터를 자동으로 구성해주는 솔루션을 사용. 주요 솔루션으로는 kubeadm, kops(Kubernetes Operations), KRIB(Kubernetes Rebar Integrated Bootstrap), kuberspray가 있다.
+
+### 3.1.3 쿠버네티스 구성하기
+### 3.1.4 파드 배포를 중심으로 쿠버네티스 구성 요소 살펴보기
+0. `kubectl`: 쿠버네티스 클러스터에 명령을 내리는 역할. 다른 구성요소와 다르게 바로 실행되는 명령 형태인 바이너리로 배포되기 때문에 마스터 노드에 있을 필요는 없지만 통상적으로 API 서버와 주로 통신 하므로 API 서버가 위치한 마스터 노드에 구성했다.
+1. `API 서버`: 쿠버네티스 클러스터의 중심 역할을 하는 통로. 주로 상태 값을 저장하는 etcd와 통신하지만, 그 밖의 요소들 또한 API 서버를 중심에 두고 통신한다.
+2. `etcd`: 구성 요소들의 상태 값이 모두 저장되는 곳. 실제로 etcd 외의 다른 구성 요소는 상태 값을 관리하지 않는다. 그러므로 etcd의 정보만 백업돼 있다면 긴급한 장애 상황에서도 쿠버네티스 클러스터는 복구할 수 있다.
+3. `컨트롤 매니저`: 쿠버네티스 클러스터의 오브젝트 상태를 관리한다. 예를 들어 워커 노드에서 통신이 되지 않는 경우, 상태 체크와 복구는 컨트롤러 매니저에 속한 노드 컨트롤러에서 이루어진다.
+4. `스케줄러`: 노드의 상태와 자원, 레이블, 요구 조건 등을 고려해 파드를 어떤 워커 노드에 생성할 것인지를 결정하고 할당 한다.
+5. `kubelet`: 파드의 구성 내용(PodSpec)을 받아서 컨테이너 런타임으로 전달하고, 파드 안의 컨테이너들이 정상저그로 작동하는지 모니터링 한다.
+6. `컨테이너 런타임(CRI, Container Runtime Interface)`: 파드를 이루는 컨테이너의 실행을 담당한다. 
+7. `파드(Pod)`: 한 개 이상의 컨테이너로 단일 목적의 일을 하기 위해서 모인 단위.
+
+8. `네트워크 플러그인`: 쿠버네티스 클러스터의 통신을 위해서 네트워크 플러그인을 선택하고 구성해야 한다. 네트워크 플러그인은 일반적으로 CNI로 구성하는데, 주로 사용하는 CNI에는 캘리코(Calico), 플래널(Flannel), 실리움(Cilium), 큐브 라우터(Kube-router), 로마나(Romana), 위브넷(WeaveNet), Canal이 있다.
+9. `CoreDNS`: 클라우드 네이티브 컴퓨팅 재단에서 보증하는 프로젝트로, 빠르고 유연한 DNS 서버이다.
+
+### 3.1.5 파드의 생명주기로 쿠버네티스 구성 요소 살펴보기
+생명주기(Life cycle)는 파드가 생성, 수정, 삭제되는 과정을 나타냅니다.
+
+1. kubectl을 통해 API 서버에 파드 생성을 요청한다.
+2. API 서버에 전달된 내용이 있으면 API 서버는 etcd에 전달된 내용을 모두 기록해 클러스터의 상태 값을 최신으로 유지한다. 따라서 각 요소가 상태를 업데이트 할 때마다 API 서버를 통해 etcd에 기록된다.
+3. API 서버에 파드 생성이 요청된 것을 컨트롤러 매니저가 인지하면 컨트로러 매니저는 파드를 생성하고, 이 상태를 API 서버에 전달한다.
+4. API 서버에 파드가 생성됐다는 정보를 스케줄러가 인지한다. 스케줄러는 생성된 파드를 어떤 워커 노드에 적용할지 조건을 고려해 결정하고  해당 워커 노드에 파드를 띄우도록 요청한다.
+5. API 서버에 전달된 정보대로 지정한 워커 노드에 파드가 속해 있는지 스케줄러가 kubelet으로 확인한다.
+6. kubelet에서 컨테이너 런타임으로 파드 생성을 요청한다.
+7. 파드가 생성된다.
+8. 파드가 사용 가능한 상태가 된다.
+
+
+## 3.2 쿠버네티스 기본 사용법
+
+
+## 3.3 쿠버네티스 연결을 담당하는 서비스
+## 3.4 알아두면 쓸모 있는 쿠버네티스 오브젝트
 ---
 # 4. 쿠버네티스를 이루는 컨테이너 도우미, 도커
 
