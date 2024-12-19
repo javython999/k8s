@@ -282,9 +282,246 @@ chmod 744 ./ping_2_nds.sh
 7. 파드가 생성된다.
 8. 파드가 사용 가능한 상태가 된다.
 
-
 ## 3.2 쿠버네티스 기본 사용법
 
+### 3.2.1 파드를 생성하는 방법
+1. `kubectl run`명령을 실행하면 쉽게 파드를 생성할 수 있다. run 다음 나오는 `nginx`는 파드의 이름이고 `--image=nginx`는 생서할 이미지의 이름이다.
+
+```bash
+kubectl create deployment dpy-nginx --image=nginx
+```
+
+2. `kubectl create`. `create`로 파드를 생성하려면 `kubectl create`에 `deployment`를 추가해서 실행해야 한다.
+```bash
+kubectl run nginx --image=nginx
+```
+`run`명령을 실행하면 쉽게 파드를 생성할 수 있는데 왜 `kubectl create`명령을 사용할까?
+
+`run`으로 파드를 생성하면 1개만 생성되고 관리된다. `create deployment`로 파드를 생성하면 `디플로이먼트`라는 관리 그룹 내에서 파드가 생성된다.
+
+> 쿠버네티스 1.18 버전부터는 create로 생성을 권고하고 있다.
+
+### 3.2.2 오브젝트란
+쿠버네티스를 사용하는 관점에서 파드와 디플로이먼트는 `스펙`과 `상태` 등의 값을 가지고 있다. 이러한 값을 가지고 있는 파드와 디플로이먼트를 개별 속성을 포함해 부르는 단위를 `오브젝트`라고 한다.
+쿠버네티스는 여러 유형의 오브젝트를 제공한다.
+
+1. 기본 오브젝트
+   * 파드(Pod): 쿠버네티스에서 실행되는 최소 단위, 독립적인 공간과 사용 가능한 IP를 가지고 있다.
+   * 네임스페이스(Namespaces): 쿠버네티스 클러스터에서 사용되는 리소스들을 구분해 관리하는 그룹이다. 특별히 지정하지 않으면 `default`가 할당된다. 쿠버네티스 시스템에서 사용되는 `kube-system`, 온프레미스에서 쿠버네티스를 사용할 경우 외부에서 쿠버네티스 클러스터 내부로 접속하게 도와주는 컨테이너들이 속해있는 `metallb-system`이 있다.
+   * 볼륨(Volume): 파드가 생성될 때 파드에서 사용할 수 있는 디렉터리를 제공한다. 파드는 영속되는 개념이 아니라 제공되는 디렉터리를 임시로 사용한다. 파드가 사라지더라도 데이터를 저장과 보존을 할 경우 볼륨 오브젝트를 생성하고 사용할 수 있다.
+   * 서비스(Service): 파드는 클러스터 내에서 유동적이기 때문에 접속 정보가 고정일 수 없다. 따라서 파드 접속을 안정적으로 유지하도록 서비스를 통해 내/외부로 연결된다. 기존 인프라에서 로드밸런서, 게이트웨이와 비슷한 역할을 한다.
+2. 디플로이먼트
+   * 기본 오브젝트로만으로도 쿠버네티스를 사용할 수 있다. 하지만 한계가 있어 이를 좀더 효율적으로 작동하도록 기능들을 조합하고 추가해 구현한 것이 디플로이먼트다.
+   * 이 외에도 데몬셋, 컨피그맵, 레플리카셋, PV(PersistentVolume), PVC(PersistentVolumeClaim), 스테이풀셋 등이 있다.
+
+### 3.2.3 레플리카셋으로 파드 수 관리하기
+많은 사용자를 대상으로 웹 서비스를 하려면 다수의 파드가 필요한데, 이를 하나씩 생성하는 것은 비효율적이다. 쿠버네티스에서는 다수의 파드를 만드는 레플리카셋 오브젝트를 제공한다.
+파드를 3개 만들겠다고 레플리카셋에 선언하면 컨트롤러 매니저와 스케줄러가 워커 노드에 파드 3개를 만들도록 선언한다. 레플리카셋은 파드 수를 보장하는 기능만 제공하기에 롤링 업데이트 등의 기능이 추가된 디플로이먼트를 사용해서 파드 수를 관리하기를 권장한다.
+
+```bash
+kubectl scale pod nginx-pod --replicas=3
+```
+`nginx-pod`는 `run`으로 생성했기에 `deployment`에 속하지 않는다. 그래서 리소스를 확인할 수 없다는 에러가 발생한다.
+
+```bash
+kubectl scale deployment dpy-nginx --replicas=3
+```
+
+### 3.2.4 스펙을 지정해서 오브젝트 생성하기
+`kubectl create deployment`명령으로 디플로이먼트를 생성하긴 했지만, 1개의 파드만 만들어졌다. `create`에서는 `replicas`옵션을 사용할 수 없고, `scale`은 이미 만들어진 디플로이먼트에서만 사용할 수 있다.
+이런 설정을 적용하려면 필요한 내용을 파일로 작성해야 한다. 이때 작성하는 파일을 `오브젝트 스펙`이라고 한다. 오브젝트 스펙은 yaml(야믈) 문법으로 작성한다.
+
+```yml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo-hname
+  labels:
+    app: nginx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+        - name: echo-hname
+          image: sysnet4admin/echo-hname
+```
+
+```bash
+kubectl create -f ~/_Book_k8sInfra/ch3/3.2.4/echo-hname.yaml
+```
+오브젝트 스펙에 설정한 내용대로 디플로이먼트가 생성된다.
+오브젝트 스펙 파일을 변경후 `kubectl create -f ~/_Book_k8sInfra/ch3/3.2.4/echo-hname.yaml` 실행하면 에러가 발생한다.   
+`Error from server (AlreadyExists): error when creating "/root/_Book_k8sInfra/ch3/3.2.4/echo-hname.yaml": deployments.apps "echo-hname" already exists`
+배포된 오브젝트의 스펙을 변경하고 싶을 때에는 어떻게 해야할까? 지우고 다시 만들어야 할까?
+
+### 3.2.5 apply로 오브젝트 생성하고 관리하기
+앞서 확인한 것처럼 파일의 변경사항을 바로 적용할 수 없다는 단점이 있다. 이런 경우를 위해 쿠버네티스는 `apply` 명령어를 제공한다.
+```bash
+kubectl apply -f ~/_Book_k8sInfra/ch3/3.2.4/echo-hname.yaml
+```
+
+### 3.2.6 파드의 컨테이너 자동 복구 방법
+쿠버네티스는 거의 모든 부분이 자동 복구되도록 설계됐다. 특히 파드의 자동 복구 기술은 `셀프 힐링(self-healing)`이라고 하는데, 제대로 작동하지 않는 컨테이너를 다시 시작하거나 교체해 파드가 정상적으로 작동하게 한다.
+
+1. 파드 IP 확인
+```bash
+kubectl get pods -o wide 
+```
+2. 파드 접속
+```bash
+kubectl exec -it nginx-pod -- /bin/bash
+```
+3. nginx 프로세스 ID 확인
+```bash
+cat /run/nginx.pid
+```
+
+4. nginx에 지속적으로 요청 보내기
+```bash
+i=1; while true; do sleep 1; echo $((i++)) `curl --silent 172.16.132.4 | grep title`; done
+```
+
+5. nginx kill
+```bash
+kill 1
+```
+6. self-healing 확인
+```bash
+kubectl get pods
+```
+
+### 3.2.7 파드의 동작 보증 기능
+쿠버네티스는 파드 자체에 문제가 발생하면 파드를 자동 복구해서 파드가 항상 동작하도록 보장하는 기능도 있다.
+
+1. 파드에 문제가 있는 상황을 만들기 위해 생성한 파드를 삭제한다.
+```bash
+kubectl get pods
+kubectl delete pods nginx-pod
+```
+
+2. 파드의 동작을 보증하려면 어떤 조건이 필요하다. 어떤 조건인지 확인해보기 위해 다른 파드도 삭제해 서로 비교해보자.
+```bash
+kubectl delete pod echo-hname-7894b67f-2xb6n
+```
+3. 파드 조회
+```bash
+kubectl get pods
+```
+아직도 6개의 파드가 존재한다. 그런제 삭제했던 `echo-hname-7894b67f-2xb6n`는 없다. nginx-pod는 디플로이먼트에 속한 파드가 아니며 어떤 컨트롤러도 이 파드를 관리하지 않는다.
+따라서 nginx-pod가 삭제되고 다시 생성되지도 않는다. `echo-hname-7894b67f-2xb6n`는 디플로이먼트에 속한 파드이다.
+앞에서 replicas를 6으로 선언했다. replicas는 파드를 선언한 수대로 유지하도록 파두의 수를 항상 확인하고 부족하면 새로운 파드를 만들어 낸다.
+따라서 임의로 파드를 삭제하면 replicas가 삭제된 파드를 확인하고 총 개수에 맞추기 위해 파드를 생성하게 된다.
+
+4. 디플로이먼트에 속한 파드는 사우이 디플로이먼트를 삭제해야 파드가 삭제된다.
+```bash
+kubectl delete deployment echo-hname
+```
+
+### 3.2.8 노드 자원 보호하기
+쿠버네티스는 파드를 안정적으로 작동하도록 관리한다는 것을 알았다. 그렇다면 노드는 어떤 식으로 관리할까?
+우선 노드의 목적을 명확히 해야 한다. 노든느 쿠버네티스 스케줄러에서 파드를 할당받고 처리하는 역할을 한다.    
+
+몇 차례 문제가 생긴 노드에 파드를 할당하면 문제가 생길 가능성이 높다. 이런 경우에는 영향도가 적은 파드를 할당해 일정 기간 사용하면서 모니터링 해야 한다.
+즉, 노드에 문제가 생기더라도 파드의 문제를 최소화해야 한다. 하지만 쿠버네티스는 모든 노드에 균등하게 파드를 할당하려고 한다.     
+이렇게 문제가 생길 가능성이 있는 노드라는 것을 쿠버네티스에게 알려주면 좋을 것이다.
+
+쿠버네티스에는 이런 경우 `cordon` 기능을 사용한다.
+
+1. deployment 배포
+```bash
+kubectl create -f ~/_Book_k8sInfra/ch3/3.2.8/echo-hname.yaml
+```
+
+2. replicas 9개로 설정
+```bash
+kubectl scale deployment echo-hname --replicas=9
+```
+
+3. 배포된 pod 확인
+```bash
+kubectl get pods -o wide
+```
+w1-k8s, w2-k8s, w3-k8s 각각 3개씩 파드가 생성되었다.
+
+
+4. scale로 파드의 수 3개로 줄이기
+```bash
+kubectl scale deployment echo-hname --replicas=3
+```
+w1-k8s, w2-k8s, w3-k8s 각각 1개씩 파드가 생성되었다.
+
+5. w3-k8s노드에 문제가 자주 발생해 현재 상태를 보존해야 한다고 가정하자. w3-k8s에 `cordon` 명령을 실행한다.
+```bash
+kubectl cordon w3-k8s
+```
+
+6. `kubectl get nodes`명령을 실행해 `cordon` 명령이 제대로 적용됐는지 확인한다.
+```bash
+kubectl get nodes
+```
+
+```bash
+NAME     STATUS                     ROLES    AGE   VERSION
+m-k8s    Ready                      master   24h   v1.18.4
+w1-k8s   Ready                      <none>   24h   v1.18.4
+w2-k8s   Ready                      <none>   24h   v1.18.4
+w3-k8s   Ready,SchedulingDisabled   <none>   24h   v1.18.4
+```
+w3-k8s가 더 이상 파드가 할당되지 않는 상태로 변경됐다.
+이처럼 `cordon`명령을 실행하면 해당 노드에 파드가 할당되지 않게 스케줄되지 않는 상태(SchedulingDisabled)라는 표시를 한다.
+
+7. 이 상태에서 파드 수를 9개로 늘린다.
+```bash
+kubectl scale deployment echo-hname --replicas=9
+```
+```bash
+NAME                        READY   STATUS    RESTARTS   AGE   IP               NODE     NOMINATED NODE   READINESS GATES
+echo-hname-7894b67f-7q8dp   1/1     Running   0          11m   172.16.132.9     w3-k8s   <none>           <none>
+echo-hname-7894b67f-grc9j   1/1     Running   0          11m   172.16.221.133   w1-k8s   <none>           <none>
+echo-hname-7894b67f-hnbkb   1/1     Running   0          11m   172.16.103.132   w2-k8s   <none>           <none>
+echo-hname-7894b67f-jfjdz   1/1     Running   0          22s   172.16.221.136   w1-k8s   <none>           <none>
+echo-hname-7894b67f-lh9t9   1/1     Running   0          22s   172.16.221.138   w1-k8s   <none>           <none>
+echo-hname-7894b67f-ln7p4   1/1     Running   0          22s   172.16.103.135   w2-k8s   <none>           <none>
+echo-hname-7894b67f-mzs5t   1/1     Running   0          22s   172.16.103.137   w2-k8s   <none>           <none>
+echo-hname-7894b67f-n474h   1/1     Running   0          22s   172.16.221.137   w1-k8s   <none>           <none>
+echo-hname-7894b67f-wqk7t   1/1     Running   0          22s   172.16.103.136   w2-k8s   <none>           <none>
+```
+w3-k8s의 파드 수가 여전히 1개인 것을 확인할 수 있다.
+
+8. 파드의 수를 3개로 줄인다.
+```bash
+kubectl scale deployment echo-hname --replicas=3
+```
+
+9. 각 노드에 할당 된 파드 수가 공평하게 1개씩인지 확인한다.
+```bash
+kubectl get pods -o wide
+```
+
+10. `uncordon` 명령으로 w3-k8s에 파드가 할당되지 않게 설정 했던 것을 해제 한다.
+```bash
+kubectl uncordon w3-k8s
+```
+
+11 `uncordon` 명령이 적용 됐는지 `kubectl get nodes` 명령으로 확인한다.
+```bash
+kubectl get nodes
+```
+
+```bash
+NAME     STATUS   ROLES    AGE   VERSION
+m-k8s    Ready    master   25h   v1.18.4
+w1-k8s   Ready    <none>   24h   v1.18.4
+w2-k8s   Ready    <none>   24h   v1.18.4
+w3-k8s   Ready    <none>   24h   v1.18.4
+```
 
 ## 3.3 쿠버네티스 연결을 담당하는 서비스
 ## 3.4 알아두면 쓸모 있는 쿠버네티스 오브젝트
