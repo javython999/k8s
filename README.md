@@ -287,12 +287,12 @@ chmod 744 ./ping_2_nds.sh
 ### 3.2.1 파드를 생성하는 방법
 1. `kubectl run`명령을 실행하면 쉽게 파드를 생성할 수 있다. run 다음 나오는 `nginx`는 파드의 이름이고 `--image=nginx`는 생서할 이미지의 이름이다.
 
-```bash
+```shell
 kubectl create deployment dpy-nginx --image=nginx
 ```
 
 2. `kubectl create`. `create`로 파드를 생성하려면 `kubectl create`에 `deployment`를 추가해서 실행해야 한다.
-```bash
+```shell
 kubectl run nginx --image=nginx
 ```
 `run`명령을 실행하면 쉽게 파드를 생성할 수 있는데 왜 `kubectl create`명령을 사용할까?
@@ -318,12 +318,12 @@ kubectl run nginx --image=nginx
 많은 사용자를 대상으로 웹 서비스를 하려면 다수의 파드가 필요한데, 이를 하나씩 생성하는 것은 비효율적이다. 쿠버네티스에서는 다수의 파드를 만드는 레플리카셋 오브젝트를 제공한다.
 파드를 3개 만들겠다고 레플리카셋에 선언하면 컨트롤러 매니저와 스케줄러가 워커 노드에 파드 3개를 만들도록 선언한다. 레플리카셋은 파드 수를 보장하는 기능만 제공하기에 롤링 업데이트 등의 기능이 추가된 디플로이먼트를 사용해서 파드 수를 관리하기를 권장한다.
 
-```bash
+```shell
 kubectl scale pod nginx-pod --replicas=3
 ```
 `nginx-pod`는 `run`으로 생성했기에 `deployment`에 속하지 않는다. 그래서 리소스를 확인할 수 없다는 에러가 발생한다.
 
-```bash
+```shell
 kubectl scale deployment dpy-nginx --replicas=3
 ```
 
@@ -353,7 +353,7 @@ spec:
           image: sysnet4admin/echo-hname
 ```
 
-```bash
+```shell
 kubectl create -f ~/_Book_k8sInfra/ch3/3.2.4/echo-hname.yaml
 ```
 오브젝트 스펙에 설정한 내용대로 디플로이먼트가 생성된다.
@@ -363,7 +363,7 @@ kubectl create -f ~/_Book_k8sInfra/ch3/3.2.4/echo-hname.yaml
 
 ### 3.2.5 apply로 오브젝트 생성하고 관리하기
 앞서 확인한 것처럼 파일의 변경사항을 바로 적용할 수 없다는 단점이 있다. 이런 경우를 위해 쿠버네티스는 `apply` 명령어를 제공한다.
-```bash
+```shell
 kubectl apply -f ~/_Book_k8sInfra/ch3/3.2.4/echo-hname.yaml
 ```
 
@@ -371,29 +371,29 @@ kubectl apply -f ~/_Book_k8sInfra/ch3/3.2.4/echo-hname.yaml
 쿠버네티스는 거의 모든 부분이 자동 복구되도록 설계됐다. 특히 파드의 자동 복구 기술은 `셀프 힐링(self-healing)`이라고 하는데, 제대로 작동하지 않는 컨테이너를 다시 시작하거나 교체해 파드가 정상적으로 작동하게 한다.
 
 1. 파드 IP 확인
-```bash
+```shell
 kubectl get pods -o wide 
 ```
 2. 파드 접속
-```bash
+```shell
 kubectl exec -it nginx-pod -- /bin/bash
 ```
 3. nginx 프로세스 ID 확인
-```bash
+```shell
 cat /run/nginx.pid
 ```
 
 4. nginx에 지속적으로 요청 보내기
-```bash
+```shell
 i=1; while true; do sleep 1; echo $((i++)) `curl --silent 172.16.132.4 | grep title`; done
 ```
 
 5. nginx kill
-```bash
+```shell
 kill 1
 ```
 6. self-healing 확인
-```bash
+```shell
 kubectl get pods
 ```
 
@@ -401,17 +401,17 @@ kubectl get pods
 쿠버네티스는 파드 자체에 문제가 발생하면 파드를 자동 복구해서 파드가 항상 동작하도록 보장하는 기능도 있다.
 
 1. 파드에 문제가 있는 상황을 만들기 위해 생성한 파드를 삭제한다.
-```bash
+```shell
 kubectl get pods
 kubectl delete pods nginx-pod
 ```
 
 2. 파드의 동작을 보증하려면 어떤 조건이 필요하다. 어떤 조건인지 확인해보기 위해 다른 파드도 삭제해 서로 비교해보자.
-```bash
+```shell
 kubectl delete pod echo-hname-7894b67f-2xb6n
 ```
 3. 파드 조회
-```bash
+```shell
 kubectl get pods
 ```
 아직도 6개의 파드가 존재한다. 그런제 삭제했던 `echo-hname-7894b67f-2xb6n`는 없다. nginx-pod는 디플로이먼트에 속한 파드가 아니며 어떤 컨트롤러도 이 파드를 관리하지 않는다.
@@ -420,7 +420,7 @@ kubectl get pods
 따라서 임의로 파드를 삭제하면 replicas가 삭제된 파드를 확인하고 총 개수에 맞추기 위해 파드를 생성하게 된다.
 
 4. 디플로이먼트에 속한 파드는 사우이 디플로이먼트를 삭제해야 파드가 삭제된다.
-```bash
+```shell
 kubectl delete deployment echo-hname
 ```
 
@@ -435,39 +435,39 @@ kubectl delete deployment echo-hname
 쿠버네티스에는 이런 경우 `cordon` 기능을 사용한다.
 
 1. deployment 배포
-```bash
+```shell
 kubectl create -f ~/_Book_k8sInfra/ch3/3.2.8/echo-hname.yaml
 ```
 
 2. replicas 9개로 설정
-```bash
+```shell
 kubectl scale deployment echo-hname --replicas=9
 ```
 
 3. 배포된 pod 확인
-```bash
+```shell
 kubectl get pods -o wide
 ```
 w1-k8s, w2-k8s, w3-k8s 각각 3개씩 파드가 생성되었다.
 
 
 4. scale로 파드의 수 3개로 줄이기
-```bash
+```shell
 kubectl scale deployment echo-hname --replicas=3
 ```
 w1-k8s, w2-k8s, w3-k8s 각각 1개씩 파드가 생성되었다.
 
 5. w3-k8s노드에 문제가 자주 발생해 현재 상태를 보존해야 한다고 가정하자. w3-k8s에 `cordon` 명령을 실행한다.
-```bash
+```shell
 kubectl cordon w3-k8s
 ```
 
 6. `kubectl get nodes`명령을 실행해 `cordon` 명령이 제대로 적용됐는지 확인한다.
-```bash
+```shell
 kubectl get nodes
 ```
 
-```bash
+```shell
 NAME     STATUS                     ROLES    AGE   VERSION
 m-k8s    Ready                      master   24h   v1.18.4
 w1-k8s   Ready                      <none>   24h   v1.18.4
@@ -478,10 +478,10 @@ w3-k8s가 더 이상 파드가 할당되지 않는 상태로 변경됐다.
 이처럼 `cordon`명령을 실행하면 해당 노드에 파드가 할당되지 않게 스케줄되지 않는 상태(SchedulingDisabled)라는 표시를 한다.
 
 7. 이 상태에서 파드 수를 9개로 늘린다.
-```bash
+```shell
 kubectl scale deployment echo-hname --replicas=9
 ```
-```bash
+```shell
 NAME                        READY   STATUS    RESTARTS   AGE   IP               NODE     NOMINATED NODE   READINESS GATES
 echo-hname-7894b67f-7q8dp   1/1     Running   0          11m   172.16.132.9     w3-k8s   <none>           <none>
 echo-hname-7894b67f-grc9j   1/1     Running   0          11m   172.16.221.133   w1-k8s   <none>           <none>
@@ -496,26 +496,26 @@ echo-hname-7894b67f-wqk7t   1/1     Running   0          22s   172.16.103.136   
 w3-k8s의 파드 수가 여전히 1개인 것을 확인할 수 있다.
 
 8. 파드의 수를 3개로 줄인다.
-```bash
+```shell
 kubectl scale deployment echo-hname --replicas=3
 ```
 
 9. 각 노드에 할당 된 파드 수가 공평하게 1개씩인지 확인한다.
-```bash
+```shell
 kubectl get pods -o wide
 ```
 
 10. `uncordon` 명령으로 w3-k8s에 파드가 할당되지 않게 설정 했던 것을 해제 한다.
-```bash
+```shell
 kubectl uncordon w3-k8s
 ```
 
 11 `uncordon` 명령이 적용 됐는지 `kubectl get nodes` 명령으로 확인한다.
-```bash
+```shell
 kubectl get nodes
 ```
 
-```bash
+```shell
 NAME     STATUS   ROLES    AGE   VERSION
 m-k8s    Ready    master   25h   v1.18.4
 w1-k8s   Ready    <none>   24h   v1.18.4
@@ -523,6 +523,336 @@ w2-k8s   Ready    <none>   24h   v1.18.4
 w3-k8s   Ready    <none>   24h   v1.18.4
 ```
 
+### 3.2.9 노드 유지보수하기
+유지보수를 위해 노드를 꺼야하는 상황이 발생한다. 이런 경우를 대비해 쿠버네티스는 `drain` 기능을 제공한다.
+`drain`은 지정된 노드이 파드를 전부 다른 곳으로 이동시켜 해당 노드를 유지보수할 수 있게 한다.
+
+1. `kubectl drain` 명령을 실행해 유지보수할 노드(w3-k8s)를 파드가 없는 상태로 만든다.
+```shell
+kubectl drain
+```
+
+```shell
+node/w3-k8s cordoned
+error: unable to drain node "w3-k8s", aborting command...
+
+There are pending nodes to be drained:
+ w3-k8s
+error: cannot delete DaemonSet-managed Pods (use --ignore-daemonsets to ignore): kube-system/calico-node-wmntq, kube-system/kube-proxy-44v2w
+```
+w3-k8s에서 데몬셋을 지을 수 없어서 명령을 수행할 수 없다고 나온다.
+`drain`은 실제로 파드를 옮기는 것이 아니라 노드에서 파드를 삭제하고 다른 곳에서 다시 생성한다.
+그런데 DaemonSet은 각 노드에 1개만 존재하는 파드라서 drain으로는 삭제할 수 없다.
+
+2. `drain`명령과 `ignore-daemonstes` 옵션을 함꼐 사용한다. 이옵션을 사용하면 DaemonSet을 무시하고 진행한다.
+```shell
+kubectl drain w3-k8s --ignore-daemonsets 
+```
+```shell
+node/w3-k8s already cordoned
+WARNING: ignoring DaemonSet-managed Pods: kube-system/calico-node-wmntq, kube-system/kube-proxy-44v2w
+evicting pod default/echo-hname-7894b67f-7q8dp
+pod/echo-hname-7894b67f-7q8dp evicted
+node/w3-k8s evicted
+```
+경고가 발생하지만 모든 파드가 이동된다.
+
+3. `kubectl get pods -o wide` w3-k8s 노드에 파드가 있는지 확인한다.
+```shell
+NAME                        READY   STATUS    RESTARTS   AGE     IP               NODE     NOMINATED NODE   READINESS GATES
+echo-hname-7894b67f-8kfjj   1/1     Running   0          5m36s   172.16.221.140   w1-k8s   <none>           <none>
+echo-hname-7894b67f-grc9j   1/1     Running   1          22h     172.16.221.139   w1-k8s   <none>           <none>
+echo-hname-7894b67f-hnbkb   1/1     Running   1          22h     172.16.103.138   w2-k8s   <none>           <none>
+```
+
+4. `kubectl get nodes`를 실행해 w3-k8s 노드의 상태를 확인한다. cordon을 실행했을 때처럼 `SchedulingDisabled` 상태이다.
+```shell
+NAME     STATUS                     ROLES    AGE   VERSION
+m-k8s    Ready                      master   47h   v1.18.4
+w1-k8s   Ready                      <none>   47h   v1.18.4
+w2-k8s   Ready                      <none>   47h   v1.18.4
+w3-k8s   Ready,SchedulingDisabled   <none>   47h   v1.18.4
+``` 
+5. 유지보수가 끝났다고 가정하고 w3-k8s에 `uncordon` 명령을 실행해 스케줄을 받을 수 있는 상태로 복귀 시킨다.
+```shell
+kubectl uncordon w3-k8s
+```
+6. `kubectl get nodes`로 노드의 상태를 다시 확인한다.
+```shell
+kubectl get nodes
+```
+
+```shell
+NAME     STATUS   ROLES    AGE   VERSION
+m-k8s    Ready    master   47h   v1.18.4
+w1-k8s   Ready    <none>   47h   v1.18.4
+w2-k8s   Ready    <none>   47h   v1.18.4
+w3-k8s   Ready    <none>   47h   v1.18.4
+```
+
+### 3.2.10 파드 업데이트하고 복구하기
+파드를 운영하다보면 컨테이너의 버전을 업데이트하거나 기존 버전으로 복구해야하는 일이 발생한다.
+
+* 파드 업데이트 하기
+1. 다음 명령어로 업데이트 테스트 파드를 배포한다. `--record`는 매우 중요한 옵션으로, 배포한 정보를 히스토리에 기록한다.
+```shell
+kubectl apply -f ~/_Book_k8sInfra/ch3/3.2.10/rollout-nginx.yaml --record
+```
+2. `record` 옵션으로 기록한 히스토리는 rollout history 명령을 실행해 확인할 수 있다.
+```shell
+kubectl rollout history deployment rollout-nginx
+```
+```shell
+deployment.apps/rollout-nginx 
+REVISION  CHANGE-CAUSE
+1         kubectl apply --filename=/root/_Book_k8sInfra/ch3/3.2.10/rollout-nginx.yaml --record=true
+```
+3. 배포한 파드의 정보를 확인한다.
+```shell
+kubectl get pods -o wide
+```
+4. 배포된 파더에 속해 있는 nginx 컨테이너 버전을 `curl -I` 명령으로 확인한다.
+```shell
+curl -I --silent 172.16.132.13 | grep Server
+```
+```shell
+Server: nginx/1.15.12
+```
+
+5. `set image` 명령으로 파드의 nginx 컨테이너 버전을 1.16.0으로 업데이트 한다. `--record`를 명령에 포함해 실행한 명령을 기록한다.
+```shell
+kubectl set image deployment rollout-nginx nginx=nginx:1.16.0 --record
+```
+```shell
+deployment.apps/rollout-nginx image updated
+```
+6. 업데이트한 후에 파드의 상태를 확인한다.
+```shell
+kubectl get pods -o wide
+```
+```shell
+NAME                             READY   STATUS    RESTARTS   AGE   IP               NODE     NOMINATED NODE   READINESS GATES
+rollout-nginx-8566d57f75-dflvk   1/1     Running   0          33s   172.16.103.140   w2-k8s   <none>           <none>
+rollout-nginx-8566d57f75-j9kkc   1/1     Running   0          43s   172.16.221.142   w1-k8s   <none>           <none>
+rollout-nginx-8566d57f75-zvjbp   1/1     Running   0          54s   172.16.132.14    w3-k8s   <none>           <none>
+```
+파드의 이름과 IP가 변경되었다. 파드는 언제라도 지우고 다시 만들 수 있다. 따라서  파드에 속한 nginx 컨테이너를 업데이트하는 가장 쉬운 방법은 파드를 관리하는 replicas의 수를 줄이고
+늘려서 파드를 새로 생선하는 것이다. 이때 시스템의 영향을 최소화하기 위해 replicas에 속한 파드를 모두 한 번에 지우는 것이 아니라 파드를 하나씩 순차적으로 지우고 생성한다.
+이때 파드 수가 많으면 하나씩이 아니라 다수의 파드가 업데이트 된다. 업데이트 기본값은 전체의 1/4(25%)개이며, 최소값은 1개이다.
+
+7. nginx 컨테이너가 1.16.0으로 모두 업데이트되면 Deployment의 상태를 확인한다.
+```shell
+kubectl rollout status deployment rollout-nginx
+```
+```shell
+deployment "rollout-nginx" successfully rolled out
+```
+
+8. `rollout history` 명령을 실행해 rollout-nginx에 적용된 명령들을 확인한다.
+```shell
+kubectl rollout history deployment rollout-nginx
+```
+```shell
+deployment.apps/rollout-nginx 
+REVISION  CHANGE-CAUSE
+1         kubectl apply --filename=/root/_Book_k8sInfra/ch3/3.2.10/rollout-nginx.yaml --record=true
+2         kubectl set image deployment rollout-nginx nginx=nginx:1.16.0 --record=true
+```
+
+9. `curl -I` 명령으로 업데이트가 제대로 이루어졌는지도 확인한다.
+```shell
+curl -I --silent 172.16.103.140 | grep Server 
+```
+```shell
+Server: nginx/1.16.0
+```
+
+* 업데이트 실패시 복구하기
+1. `set image` 명령으로 nginx의 컨테이너 버전을 의도적으로 1.17.2가 아닌 1.17.23 입력한다.
+```shell
+kubectl set image deployment rollout-nginx nginx=nginx:1.17.23 --record 
+```
+```shell
+deployment.apps/rollout-nginx image updated
+```
+
+2. 파드들을 조회한다.
+```shell
+kubectl get pods -o wide 
+```
+```shell
+NAME                             READY   STATUS             RESTARTS   AGE    IP               NODE     NOMINATED NODE   READINESS GATES
+rollout-nginx-8566d57f75-dflvk   1/1     Running            0          11m    172.16.103.140   w2-k8s   <none>           <none>
+rollout-nginx-8566d57f75-j9kkc   1/1     Running            0          11m    172.16.221.142   w1-k8s   <none>           <none>
+rollout-nginx-8566d57f75-zvjbp   1/1     Running            0          11m    172.16.132.14    w3-k8s   <none>           <none>
+rollout-nginx-856f4c79c9-q52h2   0/1     ImagePullBackOff   0          109s   172.16.132.15    w3-k8s   <none>           <none>
+```
+업데이트 된 파드가 정상적으로 생성되지 않았다.
+
+3. 문제를 확인하기 위해 `rollout status`를 실행한다.
+```shell
+kubectl rollout status deployment rollout-nginx 
+```
+```shell
+Waiting for deployment "rollout-nginx" rollout to finish: 1 out of 3 new replicas have been updated...
+```
+새로운 replicas는 생성했으나(new replicas have been updated) 디플로이먼트를 배포하는 단계에서는 대기중(Waiting)으로 더이상 진행되지 않은 것을 확인할 수 있다.
+
+4. `describe` 명령으로 문제를 좀 더 자세히 살펴보자
+```shell
+kubectl describe deployment rollout-nginx
+```
+```shell
+Name:                   rollout-nginx
+Namespace:              default
+CreationTimestamp:      Thu, 19 Dec 2024 21:21:59 +0900
+Labels:                 <none>
+Annotations:            deployment.kubernetes.io/revision: 3
+                        kubernetes.io/change-cause: kubectl set image deployment rollout-nginx nginx=nginx:1.17.23 --record=true
+Selector:               app=nginx
+Replicas:               3 desired | 1 updated | 4 total | 3 available | 1 unavailable
+StrategyType:           RollingUpdate
+MinReadySeconds:        0
+RollingUpdateStrategy:  25% max unavailable, 25% max surge
+Pod Template:
+  Labels:  app=nginx
+  Containers:
+   nginx:
+    Image:        nginx:1.17.23
+    Port:         <none>
+    Host Port:    <none>
+    Environment:  <none>
+    Mounts:       <none>
+  Volumes:        <none>
+Conditions:
+  Type           Status  Reason
+  ----           ------  ------
+  Available      True    MinimumReplicasAvailable
+  Progressing    True    ReplicaSetUpdated
+OldReplicaSets:  rollout-nginx-8566d57f75 (3/3 replicas created)
+NewReplicaSet:   rollout-nginx-856f4c79c9 (1/1 replicas created)
+```
+`describe` 명령으로 확인하니 replicas가 새로 생성되는 과정에 멈춰있다. 1.17.23 버전의 nginx 컨테이너가 없기 때문이다.
+replicas가 생성을 시도했으나 컨테이너 이미지를 찾을 수 없어 디플로이먼트가 배포되지 않았다.
+이를 방지하고자 업데이트할 때 `rollout`을 사용하고 `--record`로 기록하는 것이다.
+
+5. 문제를 확인했으니 정상적인 상태로 복구를 해보겠다. 업데이트할 때 사용했던 명령어들을 `rollout history`로 확인한다.
+```shell
+kubectl rollout history deployment rollout-nginx 
+```
+```shell
+REVISION  CHANGE-CAUSE
+1         kubectl apply --filename=/root/_Book_k8sInfra/ch3/3.2.10/rollout-nginx.yaml --record=true
+2         kubectl set image deployment rollout-nginx nginx=nginx:1.16.0 --record=true
+3         kubectl set image deployment rollout-nginx nginx=nginx:1.17.23 --record=true
+```
+
+6. `rollout undo`로 명령 실행을 취소해 마지막 단계 (revision 3)에서 전 단계(revision 2)로 상태를 되돌린다.
+```shell
+kubectl rollout undo deployment rollout-nginx
+```
+```shell
+deployment.apps/rollout-nginx rolled back
+```
+
+7. 파드의 상태를 다시 확인한다.
+```shell
+kubectl get pods -o wide
+```
+```shell
+NAME                             READY   STATUS    RESTARTS   AGE   IP               NODE     NOMINATED NODE   READINESS GATES
+rollout-nginx-8566d57f75-dflvk   1/1     Running   0          25m   172.16.103.140   w2-k8s   <none>           <none>
+rollout-nginx-8566d57f75-j9kkc   1/1     Running   0          25m   172.16.221.142   w1-k8s   <none>           <none>
+rollout-nginx-8566d57f75-zvjbp   1/1     Running   0          26m   172.16.132.14    w3-k8s   <none>           <none>
+```
+8. `rollout history`로 실행된 명령을 확인한다.
+```shell
+kubectl rollout history deployment rollout-nginx
+```
+```shell
+REVISION  CHANGE-CAUSE
+1         kubectl apply --filename=/root/_Book_k8sInfra/ch3/3.2.10/rollout-nginx.yaml --record=true
+3         kubectl set image deployment rollout-nginx nginx=nginx:1.17.23 --record=true
+4         kubectl set image deployment rollout-nginx nginx=nginx:1.16.0 --record=true
+```
+revision 4가 추가되고 revision 2가 삭제됐다. 현재 상태를 revision 2로 되돌렸기 때문에 revision 2는 삭제되고 가장 최근 상태는 revision 4가 된다.
+
+9. 컨테이너에 배포된 nginx의 버전을 확인한다.
+```shell
+curl -I --silent 172.16.103.140 | grep Server
+```
+```shell
+Server: nginx/1.16.0
+```
+10. `rollout status` 명령으로 변경이 정상적으로 적용됐는지 확인한다.
+```shell
+kubectl rollout status deployment rollout-nginx
+```
+```shell
+deployment "rollout-nginx" successfully rolled out
+```
+11. `describe`로 현재 디플로이먼트 상태도 세부적으로 점검하자.
+```shell
+kubectl describe deployment rollout-nginx
+```
+```shell
+Name:                   rollout-nginx
+Namespace:              default
+CreationTimestamp:      Thu, 19 Dec 2024 21:21:59 +0900
+Labels:                 <none>
+Annotations:            deployment.kubernetes.io/revision: 4
+                        kubernetes.io/change-cause: kubectl set image deployment rollout-nginx nginx=nginx:1.16.0 --record=true
+Selector:               app=nginx
+Replicas:               3 desired | 3 updated | 3 total | 3 available | 0 unavailable
+StrategyType:           RollingUpdate
+MinReadySeconds:        0
+RollingUpdateStrategy:  25% max unavailable, 25% max surge
+Pod Template:
+  Labels:  app=nginx
+  Containers:
+   nginx:
+    Image:        nginx:1.16.0
+    Port:         <none>
+    Host Port:    <none>
+    Environment:  <none>
+    Mounts:       <none>
+  Volumes:        <none>
+Conditions:
+  Type           Status  Reason
+  ----           ------  ------
+  Available      True    MinimumReplicasAvailable
+  Progressing    True    NewReplicaSetAvailable
+OldReplicaSets:  <none>
+NewReplicaSet:   rollout-nginx-8566d57f75 (3/3 replicas created)
+```
+
+* 특정 시점으로 파드 복구하기
+바로 직전 상태가 아니라 특정 시점으로 돌아가고 싶다면 `--to-revision` 옵션을 사용한다.
+
+1. 처음 상태인 revision 1으로 돌아가보자
+```shell
+kubectl rollout undo deployment rollout-nginx --to-revision=1
+```
+```shell
+deployment.apps/rollout-nginx rolled back
+```
+2. 새로 생성된 파드들의 IP를 확인한다.
+```shell
+kubectl get pods -o wide
+```
+```shell
+NAME                             READY   STATUS    RESTARTS   AGE   IP               NODE     NOMINATED NODE   READINESS GATES
+rollout-nginx-64dd56c7b5-ffjpp   1/1     Running   0          34s   172.16.221.143   w1-k8s   <none>           <none>
+rollout-nginx-64dd56c7b5-pnxct   1/1     Running   0          37s   172.16.103.141   w2-k8s   <none>           <none>
+rollout-nginx-64dd56c7b5-xnthd   1/1     Running   0          36s   172.16.132.16    w3-k8s   <none>           <none>
+```
+3. `curl -I` 컨테이너 버전을 확인한다.
+```shell
+curl -I --silent 172.16.221.143 | grep Server
+```
+```shell
+Server: nginx/1.15.12
+```
 ## 3.3 쿠버네티스 연결을 담당하는 서비스
 ## 3.4 알아두면 쓸모 있는 쿠버네티스 오브젝트
 ---
