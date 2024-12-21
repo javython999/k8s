@@ -854,6 +854,244 @@ curl -I --silent 172.16.221.143 | grep Server
 Server: nginx/1.15.12
 ```
 ## 3.3 쿠버네티스 연결을 담당하는 서비스
+
+### 3.3.1 가장 간단하게 연결하는 노드포트
+1. 노드포트를 설정하면 모든 워커의 노드의 특정 포트(노드포트)를 개방
+2. 노드포트로 들어오는 요청은 노드포트 서비스로 전달된다.
+3. 노드포트 서비스는 해당 업무를 처리할 수 있는 파드로 요청을 전달.
+
+* 노드 포트 서비스로 외부에서 접속하기
+1. 디플로이먼트로 파드를 생성한다. 
+```shell
+kubectl create deployment np-pods --image=sysnet4admin/echo-hname
+```
+
+2. 배포된 파드를 확인한다.
+```shell
+kubectl get pods
+```
+```shell
+NAME                       READY   STATUS    RESTARTS   AGE
+np-pods-5767d54d4b-ncbnw   1/1     Running   0          51s
+```
+
+3. `kubectl create`로 노드포트 서비스를 생성한다. 
+```shell
+kubectl create -f ~/_Book_k8sInfra/ch3/3.3.1/nodeport.yaml
+```
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: np-svc
+spec:
+  selector:
+    app: np-pods
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 80
+      nodePort: 30000
+  type: NodePort
+```
+
+4.  `kubectl get services`를 실행해 노드포트 서비스로 생성한 np-svc 서비스를 확인한다.
+```shell
+kubectl get services
+```
+
+```shell
+NAME         TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)        AGE
+kubernetes   ClusterIP   10.96.0.1      <none>        443/TCP        2d23h
+np-svc       NodePort    10.98.92.238   <none>        80:30000/TCP   3m42s
+```
+노드포트의 포트 번호가 30000번으로 지정됐다. CLUSTER_IP(10.98.92.238)는 쿠버네티스 클러스터의 내부에서 사용하는 IP로 자동으로 지정된다.
+
+5. 쿠버네티스 클러스터의 워커 노드 IP를 확인한다.
+```shell
+kubectl get nodes -o wide
+```
+
+```shell
+NAME     STATUS   ROLES    AGE     VERSION   INTERNAL-IP     EXTERNAL-IP   OS-IMAGE                KERNEL-VERSION                CONTAINER-RUNTIME
+m-k8s    Ready    master   2d23h   v1.18.4   192.168.1.10    <none>        CentOS Linux 7 (Core)   3.10.0-1160.90.1.el7.x86_64   docker://18.6.0
+w1-k8s   Ready    <none>   2d23h   v1.18.4   192.168.1.101   <none>        CentOS Linux 7 (Core)   3.10.0-1160.90.1.el7.x86_64   docker://18.6.0
+w2-k8s   Ready    <none>   2d23h   v1.18.4   192.168.1.102   <none>        CentOS Linux 7 (Core)   3.10.0-1160.90.1.el7.x86_64   docker://18.6.0
+w3-k8s   Ready    <none>   2d23h   v1.18.4   192.168.1.103   <none>        CentOS Linux 7 (Core)   3.10.0-1160.90.1.el7.x86_64   docker://18.6.0
+```
+6. 호스트 OS에서 브라우저로 192.168.1.101~103의 30000포트로 요청을 보낸다.
+
+* 부하 분산하기
+디플로이먼트로 생성된 파드 1개에 접속하고 있는 중에 파드가 3개로 증가하면 어떻게 될까?
+부하가 분산되는지 확인해보자.
+
+1. 호스트 OS에 powershell에서  아래의 명령을 실행해 파드의 이름을 확인한다.
+```shell
+$i=0; while($true) 
+{ 
+  % {$i++; write-host -NoNewLine "$i $_"} 
+  (Invoke-RestMethod "http://192.168.1.101:30000")-replace '\n', " "
+}
+```
+
+2. 배포된 파드를 확인한다.
+```shell
+kubectl get pods
+```
+
+3. powershell에 파드의 이름 3개가 돌아가면서 표시된다.
+   어떻게 추가된 파드를 외부에서 추적해서 접속하는 것일까? 이는 노드포트 오브젝트 스펙에 적힌 `np-pods`와 디플로이먼트의 이름을 확인해 동일하면 같은 파드라고 간주하기 때문이다.
+
+* expose로 노드포트 서비스 생성하기
+노드포트 서비스는 오브젝트 스펙 파일로만 생성할 수 있는게 아니다. `expose` 명령어로도 생성할 수 있다.
+
+1. `expose` 명령어를 사용해 서비스로 내보낼 디플로이먼트를 np-pods로 지정한다. 서비스의 이름은 `np-svc-v2`로, 타입은 `NodePort`로 지정한다.
+마지막으로 서비스갚 ㅏ드로 보내줄 연결 포트를 80번으로 지정한다.
+```shell
+kubectl expose deployment np-pods --type=NodePort --name=np-svc-v2 --port=80
+```
+
+2. 생성된 서비스를 확인한다. 오브젝트 스펙으로 생성할 때는 노드포트 번호를 지정할 수 있지만 `expose` 명령어로 생성할 때에는 30000~32767에서 임의로 지정이 된다.
+
+```shell
+NAME         TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)        AGE
+kubernetes   ClusterIP   10.96.0.1      <none>        443/TCP        3d
+np-svc       NodePort    10.98.92.238   <none>        80:30000/TCP   40m
+np-svc-v2    NodePort    10.100.164.3   <none>        80:30600/TCP   9s
+```
+
+### 3.3.2 사용 목적별로 연결하는 인그레스
+노드포트 서비스는 포트를 중복 사용할 수 없어서 1개의 노드포트에 1개의 디플로이먼트만 적용된다.
+여러 개의 디플로이먼트가 있을 때 그 수만큼 노드포트 서비스를 구동해야 할까?
+쿠버네티스는 이런 경우에 인그레스를 사용한다.
+`인그레스(ingress)`는 고유한 주소를 제공해 사용 목적에 따라 다른 응답을 제공할 수 있고, 트래픽에 대한 L4/L7 로드밸런서와 보안 인증처리를 하는 기능을 제공한다.
+
+인그레스를 사용하려면 인그레스 컨트롤러가 필요하다. 다양한 인그레스 컨트롤러가 있지만 쿠버네티스에서 프로젝트로 지원하는 NGINX 인그레스 컨트롤러를 구성해보겠다.
+1. 사용자는 노드마다 설정된 노드포트를 통해 노드포트 서비스로 접속한다. 이때 노드포트 서비스를 NGINX 인그레스 컨트롤러로 구성한다.
+2. NGINX 인그레스 컨트롤러는 사용자의 접속 겅로에 따라 적합한 클러스터 IP 서비스로 경로를 제공한다.
+3. 클러스터 IP 서비스는 사용자를 해당 파드로 연결해 준다.
+
+> 인그레스 컨트롤러는 파드와 직접 통신할 수 없어서 노드포트 또는 로드밸런서 서비스와 연동되어야 한다.
+
+1. 디플로이먼트 2개를 배포한다.
+```shell
+kubectl create deployment in-hname-pod --image=sysnet4admin/echo-hname
+kubectl create deployment in-ip-pod --image=sysnet4admin/echo-ip
+```
+2. 배포된 pod를 확인한다.
+```shell
+kubectl get pods
+```
+3. 인그레스 컨트롤러를 설치한다. 여기에는 많은 종류의 오브젝트 스펙이 포함된다. 
+```shell
+kubectl apply -f ~/_Book_k8sInfra/ch3/3.3.2/ingress-nginx.yaml
+```
+4. NGINX 인그레스 컨트롤러의 파드가 배포됐는지 확인한다. NGINX 인그레스 컨트롤러는 default 네임스페이스가 아닌 ingress-nginx 네임스페이스에 속하므로 -n ingress-nginx 옵션을 추가해야 한다.
+여기서 `-n`은 namespace으 약어로, default 외의 네임스페이스를 확인할 때 사용하는 옵션이다.
+
+```shell
+kubectl get pods -n ingress-nginx
+```
+
+5. 인그레스를 사용자 요구 사항에 맞게 설정하려면 경로와 작동을 정의해야 한다. 파일로도 설정할 수 있으므로 다음 경로로 실행해 미리 정의해둔 설정을 적용한다.
+```shell
+kubectl apply -f ~/_Book_k8sInfra/ch3/3.3.2/ingress-config.yaml
+```
+```yaml
+appVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: ingress-nginx
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rule:
+  - http:
+      paths:
+      - path:
+        backend:
+          serviceName: hname-svc-default
+          servicePort: 80
+      - path: /ip
+        backend:
+          serviceName: ip-svc
+          servicePort: 80
+      - path: /your-directory
+        backend:
+          serviceName: your-svc
+          servicePort: 80
+```
+
+6. 인그레스 설정 파일이 제대로 등록됐는지 `kubectl get ingress`로 확인한다.
+```shell
+kubectl get ingress
+```
+
+```shell
+NAME            CLASS    HOSTS   ADDRESS   PORTS   AGE
+ingress-nginx   <none>   *                 80      5m31s
+```
+7. kubectl get ingress -o yaml을 실행해 인그레스에 요청한 내용이 확실하게 적용됐는지 확인한다.
+이 명령은 인그레스에 적용된 내용을 야믈 형식으로 출력해 적용딘 내용을 확인할 수 있다.
+
+8. NGINX 인그레스 컨트롤러 생성과 인그레스 설정을 완료했다. 이제 외부에서 NGINX 인그레스 컨트롤러에 접속할 수 있게 노드포트 서비스로 NGINX 인그레스 컨트롤러를 외부에 노출한다.
+```shell
+kubectl apply -f ~/_Book_k8sInfra/ch3/3.3.2/ingress.yaml
+```
+```yaml
+appVersion: v1
+kind: Service
+metadata:
+  name: nginx-ingress-controller
+  namespace: ingress-nginx
+spec:
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: 80
+    nodePort: 30100
+  - name: https
+    protocol: TCP
+    port: 443
+    targetPort: 443
+    nodePort: 30101
+  selector:
+    app.kubernetes.io/name: ingress-nginx
+  type: NodePort
+```
+
+9. 노드포트 서비스로 생성된 NGINX 인그레스 컨트롤러를 확인한다. 이때도 `-n ingress-nginx`로 네임스페이스를 지정해야만 내용을 확인할 수 있다.
+```shell
+kubectl get services -n ingress-nginx
+```
+```shell
+NAME                       TYPE       CLUSTER-IP     EXTERNAL-IP   PORT(S)                      AGE
+nginx-ingress-controller   NodePort   10.96.97.238   <none>        80:30100/TCP,443:30101/TCP   4m23s
+```
+
+10. expose 명령으로 디플로이먼트(in-hname-pod, in-ip-pod)도 서비스로 노출한다. 외부와 통신하기 위해 클러스터 내부에서만 사용하는 파드를 클러스터 외부에 노출할 수 있는 구역으로 옮기는 것이다.
+내부와 외부 네트워크를 분리해 관리하는 DMZ(DeMilitarized Zone)와 유사한 기능이다.
+```shell
+kubectl expose deployment in-hname-pod --name=hname-svc-default --port=80,443
+kubectl expose deployment in-ip-pod --name=ip-svc --port=80,443
+```
+11. 생성된 서비스를 점검해 디플로이먼트들이 서비스에 정상적으로 노출되는지 확인한다. 새로 생성된 서비스는 default 네임스페이스에 있으므로 `-n` 옵션으로 네임스페이스를 지정하지 않아도 된다.
+```shell
+kubectl get services
+```
+```shell
+NAME                TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)          AGE
+hname-svc-default   ClusterIP   10.99.131.97     <none>        80/TCP,443/TCP   3m55s
+ip-svc              ClusterIP   10.110.219.254   <none>        80/TCP,443/TCP   3m
+kubernetes          ClusterIP   10.96.0.1        <none>        443/TCP          3d
+np-svc              NodePort    10.98.92.238     <none>        80:30000/TCP     80m
+np-svc-v2           NodePort    10.100.164.3     <none>        80:30600/TCP     39m
+```
+12. 호스트OS에 192.168.1.101:30100에 접속해 외부에서 접속되는 경로에 따라 다르게 동작하는지 확인한다.
+
 ## 3.4 알아두면 쓸모 있는 쿠버네티스 오브젝트
 ---
 # 4. 쿠버네티스를 이루는 컨테이너 도우미, 도커
