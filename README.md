@@ -1092,6 +1092,203 @@ np-svc-v2           NodePort    10.100.164.3     <none>        80:30600/TCP     
 ```
 12. 호스트OS에 192.168.1.101:30100에 접속해 외부에서 접속되는 경로에 따라 다르게 동작하는지 확인한다.
 
+### 3.3.3 클라우드에서 쉽게 구성 가능한 로드밸런서
+앞의 연결 방식은 들어오는 요청을 모두 워커 노드의 노드포트를 통해 노드포트 서비스로 보내고, 다시 쿠버네티스의 파드로 보내는 구조였다.
+이 방식은 매우 비효율적이다. 그래서 쿠버네티스는 로드밸런서라는 서비스 타입을 제공한다.
+
+### 3.3.4 온프레미스에서 로드밸런서를 제공하는 MetalLB
+온프레미스에서 로드밸런서를 사용하려면 내부에서 로드밸런서 서비스를 받아주는 구성이 필요한데, 이를 지원하는 것이 MetalLB이다.
+MetalLB는 베어메탈(bare metal, 운영 체제가 설치되지 않은 하드웨어)로 구성된 쿠버네티스에서도 로드밸런서를 사용할 수 있게 고안된 프로젝트다.
+MetalLB는 특별한 네트워크 설정이나 구성이 있는 것이 아니라 기존의 L2 네트워크(ARP/NDP)와 L3 네트워크(BGP)로 로드밸런서를 구현한다.
+
+1. 디플로이먼트를 이용해 2종류(lb-hname-pods, lb-ip-pods)의 파드를 생성한다. 그리고 scale 명령으로 파드를 3개로 늘려 노드당 1개씩 파드가 배포되게 한다.
+```shell
+kubectl create deployment lb-hname-pods --image=sysnet4admin/echo-hname
+kubectl create deployment lb-ip-pods --image=sysnet4admin/echo-ip
+kubectl scale deployment lb-hname-pods --replicas=3
+kubectl scale deployment lb-ip-pods --replicas=3
+```
+
+2. 2종류의 파드가가 3개씩 총 6개가 배포됐는지 확인한다.'
+```shell
+kubectl get pods
+```
+```shell
+NAME                             READY   STATUS    RESTARTS   AGE
+lb-hname-pods-79b95c7c7b-5h6dj   1/1     Running   0          51s
+lb-hname-pods-79b95c7c7b-kvntq   1/1     Running   0          58s
+lb-hname-pods-79b95c7c7b-sd27f   1/1     Running   0          51s
+lb-ip-pods-6c6bb59b4-4mbsq       1/1     Running   0          46s
+lb-ip-pods-6c6bb59b4-p7wbj       1/1     Running   0          54s
+lb-ip-pods-6c6bb59b4-vhv9t       1/1     Running   0          46s
+```
+3. 사전에 정의된 오브젝트 스펙으로 MetalLB를 구성한다. 이렇게 하면 MetalLB에 필요한 요소가 모두 설치되고 독립적인 네임스페이스도 함께 만들어진다.
+```shell
+kubectl apply -f ~/_Book_k8sInfra/ch3/3.3.4/metallb.yaml
+```
+4. 배포된 MetalLB의 파드가 5개(controller 1개, speaker 4개)인지 확인하고, IP와 상태도 확인한다.
+```shell
+kubectl get pods -n metallb-system -o wide
+```
+```shell
+NAME                          READY   STATUS    RESTARTS   AGE   IP              NODE     NOMINATED NODE   READINESS GATES
+controller-5d48db7f99-5wmvq   1/1     Running   0          16m   172.16.132.21   w3-k8s   <none>           <none>
+speaker-6fx82                 1/1     Running   0          16m   192.168.1.103   w3-k8s   <none>           <none>
+speaker-bpgv2                 1/1     Running   0          16m   192.168.1.101   w1-k8s   <none>           <none>
+speaker-ms9pq                 1/1     Running   0          16m   192.168.1.10    m-k8s    <none>           <none>
+speaker-swsgh                 1/1     Running   0          16m   192.168.1.102   w2-k8s   <none>           <none>
+```
+5. 인그레스와 마찬가지로 MetalLB도 설정을 적용해야 한다. ConfigMap을 사용한다. ConfigMap은 설정이 정의된 포맷이라고 생각하면 된다.
+
+```shell
+kubectl apply -f ~/_Book_k8sInfra/ch3/3.3.4/metallb-l2config.yaml
+```
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: metallb-system
+  name: config
+data:
+  config: |
+    address-pools:
+    - name: nginx-ip-range
+      protocol: layer2
+      addresses:
+      - 192.168.1.11-192.168.1.13
+```
+6. configMap이 생서됐는지 `kubectl get configmap -n metallb-system`으로 확인한다.
+```shell
+kubectl get configmap -n metallb-system
+```
+7. `kubectl get configmap -n metallb-system -o yaml` 명령으로 MetalLB 설정이 올바르게 적용됐는지 확인한다.
+
+8. 모든 설정이 완료됐으니 이제 각 디플로이먼트(lb-hname-pods, lb-ip-pods)를 로드밸런서 서비스로 노출한다.
+```shell
+kubectl expose deployment lb-hname-pods --type=LoadBalancer --name=lb-hname-svc --port=80
+kubectl expose deployment lb-ip-pods --type=LoadBalancer --name=lb-ip-svc --port=80
+```
+9. 생성된 로드밸런서 서비스별로 CLUSTER-IP와 EXTERNAL-IP가 잘 적용됐는지 확인한다.
+```shell
+kubectl get services
+```
+```shell
+NAME           TYPE           CLUSTER-IP       EXTERNAL-IP    PORT(S)        AGE
+kubernetes     ClusterIP      10.96.0.1        <none>         443/TCP        3d22h
+lb-hname-svc   LoadBalancer   10.110.189.159   192.168.1.11   80:30283/TCP   104s
+lb-ip-svc      LoadBalancer   10.98.221.15     192.168.1.12   80:31377/TCP   64s
+```
+10. 호스트OS에서 브라우저로 EXTERNAL-IP로 접속한다. 배포된 파드의 이름이 브라우저에 표시되는지 확인한다.
+
+11. powershell로 로드밸런서 기능이 정상적으로 작동하는지 확인한다.
+```shell
+$i=0; while($true)
+{
+  % { $i++; write-host -NoNewline "$i $_" }
+  (Invoke-RestMethod "http://192.168.1.11")-replace '\n', " "
+}
+```
+### 3.3.5 부하에 따라 자동으로 파드 수를 조절하는 HPA
+사용자가 갑자기 늘어난다면 파드가 더이상 감당할 수 없어 서비스가 불가능한 결과를 초래할 수도 있다.
+쿠버네티스는 이런 경우를 대비해 부하량에 따라 디플로이먼트의 파드 수를 유동적으로 관리하는 기능을 제공한다.
+이를 HPA(Horizontal Pod Autoscaler)라고 한다.
+
+1. 디플로이먼트 1개를 hpa-hname-pods라는 이름으로 생성한다.
+```shell
+kubectl create deployment hpa-hname-pods --image=sysnet4admin/echo-hname
+```
+2. expose를 통해 hpa-hname-pods를 로드밸런서 서비스로 설정한다.
+```shell
+kubectl expose deployment hpa-hname-pods --type=LoadBalancer --name=hpa-hname-svc --port=80
+```
+3. 설정된 로드밸런서 서비스와 부여된 IP를 확인한다.
+```shell
+kubectl get services
+```
+```shell
+NAME            TYPE           CLUSTER-IP       EXTERNAL-IP    PORT(S)        AGE
+hpa-hname-svc   LoadBalancer   10.106.135.199   192.168.1.11   80:30510/TCP   31s
+kubernetes      ClusterIP      10.96.0.1        <none>         443/TCP        3d22h
+```
+4. HPA가 작동하려면 파드의 자원이 어느 정도 사용되는지 파악해야 한다. 부하를 확인하는 명령은 리눅스의 top(table of processes)과 비슷한 `kubectl top`을 사용한다.
+```shell
+kubectl top pods
+```
+```shell
+Error from server (NotFound): the server could not find the requested resource (get services http:heapster:)
+```
+자원을 요청하는 설정이 없다며 에러가 생기고 진행되지 않는다. 
+HPA가 자원을 요청할 때 메트릭 서버를 통해 계측값을 전달 받는다. 현재 메트릭 서버가 없기 때문에 에러가 발생한다.
+따라서 계측값을 수집하고 전달하는 메트릭 서버를 설정해야 한다.
+
+5. 서비스에서와 마찬가지로 메트릭 서버도 오브젝트 스펙 파일로 설치할 수 있다.
+그러다 그림처럼 오브젝트 스펙 파일이 여러 개라서 git clone 이후에 디렉터리에 있는 파일들을 다시 실행해야하는 번거로움이 있다.
+실습에서 사용하려면 몇 가지 추가 설정이 필요한다. 그래서 쿠버네티스 메트릭 서버의 원본 소스를 옮겨 메트릭 서버를 생성하겠다.
+```shell
+kubectl create -f ~/_Book_k8sInfra/ch3/3.3.5/metrics-server.yaml
+```
+```yaml
+spec:
+  containers:
+  - image: sysnet4admin/echo-hname
+    imagePullPolicy: Always
+    name: echo-hname
+    resources: 
+      requests:
+        cpu: "10m"
+      limits:
+        cpu: "50m"
+```
+```yaml
+resources:
+  requests:
+    cpu: "10m"
+  limits:
+    cpu: "50m"
+```
+을 추가 한다.
+
+6. hpa-hname-pods에 autoscale을 설정해 특정 조건이 만족되는 경우 자동으로 scale 명령이 수행되도록 한다.
+min은 최소, max는 최대 파드의 수다. cpu-percent는 cpu사용량이 50%를 넘기게 되면 autoscale 하겠다는 뜻이다.
+```shell
+kubectl autoscale deployment hpa-hname-pods --min=1 --max=30 --cpu-percent=50
+```
+7. powershell로 부하를 건다.
+```shell
+$i=0; while($true)
+{
+  % { $i++; write-host -NoNewline "$i $_" }
+  (Invoke-RestMethod "http://192.168.1.11")-replace '\n', " "
+}
+```
+8. 부하량이 증가하면 자동으로 pod가 추가 생성된다.
+```shell
+NAME                              CPU(cores)   MEMORY(bytes)
+hpa-hname-pods-696b8fcc99-2qgcw   11m          2Mi
+```
+```shell
+NAME                              CPU(cores)   MEMORY(bytes)
+hpa-hname-pods-696b8fcc99-2qgcw   11m          2Mi
+hpa-hname-pods-696b8fcc99-9skkc   0m           2Mi
+hpa-hname-pods-696b8fcc99-b24v9   24m          2Mi
+hpa-hname-pods-696b8fcc99-f8wvw   0m           2Mi
+hpa-hname-pods-696b8fcc99-frcs9   0m           2Mi
+hpa-hname-pods-696b8fcc99-kdvzm   0m           2Mi
+hpa-hname-pods-696b8fcc99-km4zf   0m           2Mi
+hpa-hname-pods-696b8fcc99-nv6n7   0m           2Mi
+hpa-hname-pods-696b8fcc99-q6vl9   0m           2Mi
+hpa-hname-pods-696b8fcc99-s4dr7   0m           2Mi
+hpa-hname-pods-696b8fcc99-xjv7v   0m           2Mi
+```
+
+9. 부하가 없으면 autoscale은 최소 조건인 파드 1개의 상태로 만든다
+```shell
+NAME                              CPU(cores)   MEMORY(bytes)
+hpa-hname-pods-696b8fcc99-q6vl9   0m           2Mi
+
+```
+
 ## 3.4 알아두면 쓸모 있는 쿠버네티스 오브젝트
 ---
 # 4. 쿠버네티스를 이루는 컨테이너 도우미, 도커
