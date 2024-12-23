@@ -1290,6 +1290,377 @@ hpa-hname-pods-696b8fcc99-q6vl9   0m           2Mi
 ```
 
 ## 3.4 알아두면 쓸모 있는 쿠버네티스 오브젝트
+
+### 3.4.1 데몬셋
+데몬셋은 디플로이먼트의 replicas가 노드 수 만큼 정해져 있는 형태라고 할 수 있다. 노드 하나당 파드 한 개만을 생성한다.
+노드의 단일 접속 지점으로 노드 외부와 통신하는 경우 파드가 1개 이상 필요하지 않다. 노드를 관리하는 파드라면 데몬셋으로 만드는게 가장 효율적이다.
+
+1. `kubectl get pods -n metallb-system -o wide`를 실행해 현재 MetalLB의 스피커가 각 노드에 분포돼 있는 상태를 확인한다.
+```shell
+kubectl get pods -n metallb-system -o wide
+```
+```shell
+NAME                          READY   STATUS    RESTARTS   AGE   IP              NODE     NOMINATED NODE   READINESS GATES
+controller-5d48db7f99-5wmvq   1/1     Running   0          18h   172.16.132.21   w3-k8s   <none>           <none>
+speaker-6fx82                 1/1     Running   0          18h   192.168.1.103   w3-k8s   <none>           <none>
+speaker-bpgv2                 1/1     Running   1          18h   192.168.1.101   w1-k8s   <none>           <none>
+speaker-ms9pq                 1/1     Running   2          18h   192.168.1.10    m-k8s    <none>           <none>
+speaker-swsgh                 1/1     Running   0          18h   192.168.1.102   w2-k8s   <none>           <none>
+```
+2. 워커 노드를 1개 늘린다.
+
+3. w4-k8s가 추가되면 m-k8s에서 `kubectl get pods -n metallb-system -o wide -w`를 수행한다.
+```shell
+kubectl get pods -n metallb-system -o wide -w
+```
+```shell
+NAME                          READY   STATUS    RESTARTS   AGE   IP              NODE     NOMINATED NODE   READINESS GATES
+controller-5d48db7f99-5wmvq   1/1     Running   1          18h   172.16.132.27   w3-k8s   <none>           <none>
+speaker-6fx82                 1/1     Running   1          18h   192.168.1.103   w3-k8s   <none>           <none>
+speaker-bpgv2                 1/1     Running   1          18h   192.168.1.101   w1-k8s   <none>           <none>
+speaker-gtmks                 1/1     Running   0          36s   192.168.1.104   w4-k8s   <none>           <none>
+speaker-ms9pq                 1/1     Running   2          18h   192.168.1.10    m-k8s    <none>           <none>
+speaker-swsgh                 1/1     Running   1          18h   192.168.1.102   w2-k8s   <none>           <none>
+```
+4. 자동으로 추가된 노드에 설치된 스피커가 데몬셋이 맞는지 `kubectl get pods speaker-gtmks -o yaml -n metallb-system` 명령으로 확인한다.
+```shell
+ownerReferences:
+  - apiVersion: apps/v1
+    blockOwnerDeletion: true
+    controller: true
+    kind: DaemonSet
+    name: speaker
+    uid: 442ef72a-8d1f-431e-9c17-fc0dc36b227f
+```
+### 3.4.2 컨피그맵
+컨피그맵(Config Map)은 이름 그대로 설정을 목적으로 사용하는 오브젝트이다. MetalLB를 구성할 때 컨피그맵을 사용했었다. 인그레스에서는 설정을 위해 오브젝트를 인그레스로 선언했는데, 왜 MetalLB에서는 컨피그맵을 사용 했을까?
+명확하게 규정하기는 어려운데 인그레스는 오브젝트가 인그레스로 지정돼 있지만, MetalLB는 프로젝트 타입으로 정해진 오브젝트가 없어서 범용 설정으로 사용되는 컨피그맵을 지정했다.
+
+컨피그맵으로 작성된 MetalLB의 IP 설정을 변경해 보자.
+
+1. 테스트 디플로이먼트를 cfgmap이라는 이름으로 생성한다.
+```shell
+kubectl create deployment cfgmap --image=sysnet4admin/echo-hname
+```
+2. cfgmap을 로드밸런서(MetalLB)를 통해 노출하고 이름은 cfgmap-svc로 지정한다.
+```shell
+kubectl expose deployment cfgmap --type=LoadBalancer --name=cfgmap-svc --port=80
+```
+3. 생성된 서비스의 IP를 확인한다.
+```shell
+kubectl get services
+```
+```shell
+NAME         TYPE           CLUSTER-IP     EXTERNAL-IP    PORT(S)        AGE
+cfgmap-svc   LoadBalancer   10.107.22.29   192.168.1.11   80:30084/TCP   25m
+kubernetes   ClusterIP      10.96.0.1      <none>         443/TCP        4d17h
+```
+4. 사전에 구성돼 있는 컨피그맵의 기존 IP를 sed 명령을 사용해 192.168.1.21~192.168.1.23으로 변경한다.
+```shell
+cat ~/_Book_k8sInfra/ch3/3.4.2/metallb-l2config.yaml | grep 192.
+sed -i 's/11/21/;s/13/23/' ~/_Book_k8sInfra/ch3/3.4.2/metallb-l2config.yaml
+cat ~/_Book_k8sInfra/ch3/3.4.2/metallb-l2config.yaml | grep 192.
+```
+5. 컨피그맵 설정 파일(metallb-l2config.yaml)에 apply를 실행해 변경된 설정을 적용한다.
+```shell
+kubectl apply -f ~/_Book_k8sInfra/ch3/3.4.2/metallb-l2config.yaml
+```
+
+6. MetalLB와 관련된 모든 파드를 삭제한다. 샂게하고 나면 kubelet에서 해당 파드를 자동으로 모두 다시 생성한다. `--all`은 파드를 모두 삭제하는  옵션이다.
+```shell
+kubectl delete pods --all -n metallb-system
+```
+
+7. 새로 생성된 MetalLB의 파드들을 확인한다.
+```shell
+kubectl get pods -n metallb-system
+```
+
+8. 기존에 노출한 MetalLB 서비스(cfgmap-svc)를 삭제(delete)하고 동일한 이름으로 다시 생성해 새로운 컨피그맵을 적용한 서비스가 올라오게 한다.
+```shell
+kubectl delete services cfgmap-svc
+kubectl expose deployment cfgmap --type=LoadBalancer --name=cfgmap-svc --port=80
+```
+9. 변경된 설정이 적용돼 새로운 MetalLB 서비스의 IP가 192.168.1.21로 바뀌었는지 확인한다.
+```shell
+kubectl get services
+```
+```shell
+NAME         TYPE           CLUSTER-IP      EXTERNAL-IP    PORT(S)        AGE
+cfgmap-svc   LoadBalancer   10.107.50.111   192.168.1.21   80:31277/TCP   36s
+kubernetes   ClusterIP      10.96.0.1       <none>         443/TCP        4d17h
+```
+10. 호스트OS에서 브라우저에 192.168.1.21로 접속해 파드의 이름이 표시되는지 확인한다.
+
+### 3.4.3 PV와 PVC
+파드는 언제라도 생성되고 지워진다. 쿠버네티스에서 의도적으로 이렇게 구현했다.
+그런데 파드에서 생성한 내용을 기록하거나 보관하거나, 모든 파드가 동일한 설정 값을 유지하고 관리하기 위해 공유된 볼륨으로부터 공통된 설정을 가지고 올 수 있도록 설계해야 할 때도 있다.
+
+쿠버네티스는 이런 경우를 위해 다음과 같은 목적으로 다양한 형태의 볼륨을 제공한다.
+* 임시: emptyDir
+* 로컬: host Path, local
+* 원격: persistentVolumeClaim, cephfs, cinder, csi, fc(fibre channel), flexVolume, flocker, glusterfs, iscsi, nfs, portworxVolume, quobyte, rbd, scaleIO, storageos, vsphereVolume
+* 특수목적: downwardAPI, configMap, secret, azureFile, projected
+* 클라우드: awsElasticBlockStore, azureDisk, gcePersistentDisk
+
+쿠버네티스는 필요할 때 PVC(PersistentVolumeClaim, 지속적으로 사용 가능한 볼륨 요청)를 요청해 사용 한다.
+PVC를 사용하려면 PV(PersistentVolume, 지속적으로 사용 가능한 볼륨)로 볼륨을 선언해야 한다.
+PV는 볼륨을 사용할 수 있게 준비하는 단계.
+PVC는 준비된 볼륨에서 일정 공간을 할당 받는 것.
+
+* NFS 볼륨에 PV/PVC를 만들고 파드에 연결하기
+1. PV로 선언할 볼륨을 만들기 위해 NFS 서버를 마스터 노드에 구성한다. 공유되는 디렉터리는 `/nfs_shared`로 생성하고, 해당 디렉터리를 NFS로 받아 들일 IP 영역은 192.168.1.0/24로 정한다.
+옵션을 적용해 /etc/exports에 기록한다. 옵션에는 rw(읽기/쓰기), sync(쓰기 작업 동기화), no_root_squash(root 계정 사용)
+
+```shell
+mkdir /nfs_shared
+echo '/nfs_shared 192.168.1.0/24(rw,sync,no_root_squash)' >> /etc/exports
+```
+2. 해당 내용을 시스템에 적용해 NFS 서버를 활성화하고 다음 시작시에도 자동으로 적용되도록 `systemctl enable --now nfs` 명령을 실행한다.
+```shell
+systemctl enable --now nfs 
+```
+3. 오브젝트 스펙을 싱행해 PV를 생성한다.
+```shell
+kubectl apply -f ~/_Book_k8sInfra/ch3/3.4.3/nfs-pv.yaml
+```
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nfs-pv
+spec:
+  capacity:
+    storage: 100Mi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  nfs:
+    server: 192.168.1.10
+    path: /nfs_shared
+```
+* 6~7 라인: storage는 실제 사용하는 용량을 제한하는 것이 아니라 쓸 수 있는 양을 레이블로 붙이는 것과 같다.
+* 8~9 라인: PV를 어떤 방식으로 사용할지를 정의한 부분이다. `ReadWriteMany`는 여러 개의 노드가 읽고 쓸 수 있도록 마운트하는 옵션이다. 이 외에도 ReadWriteOnce(하나의 노드에서만 볼륨을 읽고 쓸 수 있게 마운트), ReadOnlyMany(여러 개의 노드가 읽도록 마운트) 옵션이 있다.
+* 10 라인: persistentVolumeReclaimPolicy는 PVC가 제거됐을 때 PV가 작동하는 방법을 정의하는 것으로, 여기서는 유지하는 Retain을 사용한다. 그 외에 Delete(삭제), Recycle(재활용, deprecated) 옵션이 있다.
+* 11~13 라인: NFS 서버의 연결 위치에 대한 설정
+
+4. `kubectl get pv`를 실행해 생성된 PV의 상태가 Avalilable(사용 가능)임을 확인한다.
+```shell
+kubectl get pv
+```
+```shell
+NAME     CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM   STORAGECLASS   REASON   AGE
+nfs-pv   100Mi      RWX            Retain           Available                                   51m
+```
+
+5. 다음 경로에서 오브젝트 스펙을 실행해 PVC를 생성한다.
+```shell
+kubectl apply -f ~/_Book_k8sInfra/ch3/3.4.3/nfs-pvc.yaml
+```
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nfc-pvc
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Mi
+```
+PVC는 PV와 구성이 거의 동일하다. 
+하지만 PV는 사용자가 요청한 볼륨 공간을 관리자가 만들고, PVC는 사용자가 볼륨을 요청하는데 사용한다는 점에서 차이가 있다.
+여기서 요청하는 `storage: 10Mi`는 동적 볼륨이 아닌 경우에는 레이블 정도의 의미를 가진다.
+
+6. 생성된 PVC를 `kubectl get pvc`로 확인한다.
+```shell
+kubectl get pvc
+```
+```shell
+NAME      STATUS   VOLUME   CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+nfs-pvc   Bound    nfs-pv   100Mi      RWX                           26m
+```
+여기서 두 가지를 살펴봐야 한다. 첫 번째는 `Bound`로 변경됐다는 것이다. 이는 PV와 PVC가 연결됐음을 의미한다.
+두번째는 용량이 설정한 10Mi가 아닌 100Mi라는 것이다. 사실 용량은 동적으로 PVC를 따로 요쳥해 생성하는 경우가 아니면 큰 의미가 없다.
+
+7. PV의 상태도 Bound로 바뀌었음을 `kubectl get pv`로 확인한다.
+```shell
+kubectl get pv
+```
+```shell
+NAME     CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM             STORAGECLASS   REASON   AGE
+nfs-pv   100Mi      RWX            Retain           Bound    default/nfs-pvc                           83m
+```
+8. 생성한 PVC를 볼륨으로 사용하는 디플로이먼트 오브젝트 스펙을 배포한다.
+```shell
+kubectl apply -f ~/_Book_k8sInfra/ch3/3.4.3/nfs-pvc-deploy.yaml
+```
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nfs-pvc-deploy
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: nfs-pvc-deploy
+  template:
+    metadata:
+      labels:
+        app: nfs-pvc-deploy
+    spec:
+      containers:
+        - name: audit-trail
+          image: sysnet4admin/audit-trail
+          volumeMounts:
+            - name: nfs-vol
+              mountPath: /audit
+      volumes:
+        - name: nfs-vol
+          persistentVolumeClaim:
+            claimName: nfs-pvc
+```
+* 15~17 라인: audit-trail 이미지를 가지고 온다. 해당 컨테이너 이미지는 요청을 처리할 때마다 접속 정보를 로그로 기록한다.
+* 18~20 라인: 볼륨이 마운트될 위치 (/audit)를 지정한다.
+* 21~24 라인: PVC로 생성된 볼륨을 마운트하기 위해 nfs-pvc라는 이름을 사용한다.
+
+9. 생성된 파드를 확인한다.
+```shell
+kubectl get pods
+```
+```shell
+NAME                              READY   STATUS    RESTARTS   AGE
+nfs-pvc-deploy-5fd9876c46-6jqtd   1/1     Running   0          25m
+nfs-pvc-deploy-5fd9876c46-d6d5s   1/1     Running   0          25m
+nfs-pvc-deploy-5fd9876c46-vh7m2   1/1     Running   0          25m
+nfs-pvc-deploy-5fd9876c46-vp6sd   1/1     Running   0          25m
+```
+
+10. 생성한 파드중 하나에 `exec`로 접속한다.
+```shell
+kubectl exec -it nfs-pvc-deploy-5fd9876c46-6jqtd -- /bin/bash
+```
+
+11. df -h를 실행해 PVC의 마운트 상태를 확인한다. 
+```shell
+Filesystem                Size      Used Available Use% Mounted on
+overlay                  37.0G      2.8G     34.2G   8% /
+tmpfs                    64.0M         0     64.0M   0% /dev
+tmpfs                     1.2G         0      1.2G   0% /sys/fs/cgroup
+192.168.1.10:/nfs_shared
+                         37.0G      3.6G     33.3G  10% /audit
+/dev/mapper/centos_k8s-root
+                         37.0G      2.8G     34.2G   8% /dev/termination-log
+/dev/mapper/centos_k8s-root
+                         37.0G      2.8G     34.2G   8% /etc/resolv.conf
+/dev/mapper/centos_k8s-root
+                         37.0G      2.8G     34.2G   8% /etc/hostname
+/dev/mapper/centos_k8s-root
+                         37.0G      2.8G     34.2G   8% /etc/hosts
+shm                      64.0M         0     64.0M   0% /dev/shm
+tmpfs                     1.2G     12.0K      1.2G   0% /run/secrets/kubernetes.io/serviceaccount
+tmpfs                     1.2G         0      1.2G   0% /proc/acpi
+tmpfs                    64.0M         0     64.0M   0% /proc/kcore
+tmpfs                    64.0M         0     64.0M   0% /proc/keys
+tmpfs                    64.0M         0     64.0M   0% /proc/timer_list
+tmpfs                    64.0M         0     64.0M   0% /proc/timer_stats
+tmpfs                    64.0M         0     64.0M   0% /proc/sched_debug
+tmpfs                     1.2G         0      1.2G   0% /proc/scsi
+tmpfs                     1.2G         0      1.2G   0% /sys/firmware
+```
+12. audit-trail 컨테이너의 기능을 테스트 한다. 외부에서 파드(nfs-pv-deploy)에 접속할 수 있도록 expose로 로드밸런서 서비스를 생성한다.
+```shell
+kubectl expose deploymant nfs-pvc-deploy --type=LoadBalancer --name=nfs-pcs-deploy-svc --port=80
+```
+
+13. `kubectl get services`로 생성한 로드밸런서 서비스의 IP를 확인한다.
+```shell
+kubectl get services
+```
+14. 호스트OS에서 브라우저로 해당 아이피로 접속해 파드의 이름과 IP가 표시되는지 확인한다.
+
+15. exec를 통해 접속한 파드에서 ls /audit 명령을 실행해 접속 기록 파일이 남았는지 확인한다. cat 명령으로 해당 파일의 내용도 함께 확인한다.
+
+16. 마스터 노드에서 scale 명령으로 파드를 4개에서 8개로 증가시킨다.
+```shell
+kubectl scale deployment nfs-pvc-deploy --replicas=8
+```
+
+17. 생성된 파드를 확인한다.
+```shell
+kubectl get pods
+```
+```shell
+NAME                              READY   STATUS    RESTARTS   AGE
+nfs-pvc-deploy-5fd9876c46-6jqtd   1/1     Running   0          90m
+nfs-pvc-deploy-5fd9876c46-c94gw   1/1     Running   0          54m
+nfs-pvc-deploy-5fd9876c46-d6d5s   1/1     Running   0          90m
+nfs-pvc-deploy-5fd9876c46-v44qt   1/1     Running   0          54m
+nfs-pvc-deploy-5fd9876c46-v52zq   1/1     Running   0          54m
+nfs-pvc-deploy-5fd9876c46-vh7m2   1/1     Running   0          90m
+nfs-pvc-deploy-5fd9876c46-vk5s9   1/1     Running   0          54m
+nfs-pvc-deploy-5fd9876c46-vp6sd   1/1     Running   0          90m
+```
+18. 최근에 증가한 4개의 파드중 1개를 선택해 exec로 접속하고, 기록된 audit 로그가 같은지 확인한다.
+
+19. 다른 브라우저를 열고 192.168.1.21로 접속해 다른 파드 이름과 IP가 표시되는지 확인한다.
+
+20. exec로 접속한 파드에섯 새로 추가된 audit 로그를 확인한다.
+
+21. 기존에 접속한 파드에서도 동일한 로그가 audit에 기록돼 있는지 확인한다.
+
+* NFS 볼륨을 파드에 직접 마운트 하기
+1. 사용자가 관리자와 동일한 단일 시스템이라면 PV와 PVC를 사용할 필요가 없다. 어떻게 단순히 볼륨을 마운트하는지 확인해보자.
+```shell
+kubectl apply -f ~/_Book_k8sInfra/ch3/3.4.3/nfs-ip.yaml
+```
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nfs-ip
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: nfs-ip
+  template:
+    metadata:
+      labels:
+        app: nfs-ip
+    spec:
+      containers:
+        - name: audit-trail
+          image: sysnet4admin/audit-trail
+          volumeMounts:
+            - name: nfs-vol 
+              mountPath: /audit
+      volumes:
+        - name: nfs-vol
+          nfs:
+            server: 192.168.1.10
+            path: /nfs_shared
+```
+* 21~25 라인을 살펴보면 PV와 PVC를 거치지 않고 바로 NFS 서버로 접속하는 것을 확인할 수 있다.
+
+2. 새로 배포된 파드를 확인하고 그중 하나에 exec로 접속한다.
+```shell
+kubectl get pods
+kubectl exec -it nfs-ip-7789f445b7-l2km7 -- /bin/bash
+```
+3. `ls /audit`
+```shell
+ls /audit
+```
+NFS 볼륨을 바라보고 있음을 확인한다.
+
+
 ---
 # 4. 쿠버네티스를 이루는 컨테이너 도우미, 도커
 
