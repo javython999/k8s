@@ -1660,10 +1660,144 @@ ls /audit
 ```
 NFS 볼륨을 바라보고 있음을 확인한다.
 
+### 3.4.4 스테이풀셋
+지금까지는 파드가 replicas에 선언된 만큼 무작위로 생성될 뿐이었다.
+그런데 파드가 만들어지는 이름과 순서를 예측해야할 때가 있다.
+주로 레디스, 주키퍼, 카산드라, 몽고DB 등의 마스터-슬레이브 구조 시스템에서 필요하다.
+이런 경우 스테이풀셋을 사용한다. 스테이풀셋은 volumeClaimTemplates 긴능을 사용해 PVC를 자동으로 생성할 수 있고,
+각 파드가 순서대로 생성되기 때문에 고정된 이름, 볼륨, 설정 등을 가질 수 있다.
+그래서 StatefulSet(이전 상태를 기억하는 세트)라는 이름을 사용한다.
 
+1. PV와 PVC는 앞에서 이미 생성했으므로 바로 스테이풀셋을 다음 명령으로 생성한다.
+```shell
+kubectl apply -f ~/_Book_k8sInfra/ch3/3.4.4/nfs-pvc-sts.yaml
+```
+
+```yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nfs-pvc-sts
+spec:
+  replicas: 4
+  serviceName: sts-svc-domain #statefulset need it
+  selector:
+    matchLabels:
+      app: nfs-pvc-sts
+  template:
+    metadata:
+      labels:
+        app: nfs-pvc-sts
+    spec:
+      containers:
+        - name: audit-trail
+          image: sysnet4admin/audit-trail
+          volumeMounts:
+            - name: nfs-vol 
+              mountPath: /audit
+      volumes:
+        - name: nfs-vol
+          persistentVolumeClaim:
+            claimName: nfs-pvc    
+```
+
+2. 파드가 잘 생성됬는지 `kubectl get pods -w`
+```shell
+kubectl get pods -w
+```
+```shell
+NAME            READY   STATUS    RESTARTS   AGE
+nfs-pvc-sts-0   1/1     Running   0          3m55s
+nfs-pvc-sts-1   1/1     Running   0          3m49s
+nfs-pvc-sts-2   1/1     Running   0          3m44s
+nfs-pvc-sts-3   1/1     Running   0          3m40s
+```
+
+3. 생성한 스테이트풀셋에 expose를 실행한다.
+그런데 에러가 발생한다. expose 명령이 스테이트풀셋을 지원하지 않기 때문이다.
+해결하려면 파일로 로드밸런서 서비스를 작성, 실행해야 한다.
+```shell
+kubectl expose statefulset nfc-pvc-sts --type=LoadBalancer --name=nfs-pvc-sts-svc --port=80
+```
+
+4. 다음 경로를 적용해 스테이트풀셋을 노출하기 위한 서비스를 생성하고, kubectl get service 명령으로 생성한 로드밸런서 서비스를 확인한다.
+```shell
+kubectl apply -f ~/_Book_k8sInfra/ch3/3.4.4/nfs-pvc-sts-svc.yaml
+kubectl get services
+```
+```shell
+NAME              TYPE           CLUSTER-IP     EXTERNAL-IP    PORT(S)        AGE
+kubernetes        ClusterIP      10.96.0.1      <none>         443/TCP        5d23h
+nfs-pvc-sts-svc   LoadBalancer   10.102.83.32   192.168.1.21   80:30980/TCP   16s
+```
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: nfs-pvc-sts-svc
+spec:
+  selector:
+    app: nfs-pvc-sts
+  ports:
+    - port: 80
+  type: LoadBalancer
+```
+
+5. 호스트OS의 브라우저에서 192.168.1.21에 접속해 파드 이름과 IP가 표시되는지 확인한다.
+
+6. exec로 파드에 접속한 후에 ls /audit -l로 새로 접속한 파드의 정보가 추가됐는지 확인한다.
+
+7. `kubectl delete statefulset nfs-pvc-sts`를 실행해 스테이트풀셋의 파드를 삭제한다. 파드는 생성된 순서의 역순으로 삭제되는데, `kubectl get pods -w`를 실행하면 삭제되는 과정을 볼 수 있다.
+```shell
+kubectl delete statefulset nfs-pvc-sts
+kubectl get pods -w
+```
 ---
 # 4. 쿠버네티스를 이루는 컨테이너 도우미, 도커
 
+## 4.1 도커를 알아야하는 이유
+쿠버네티스를 이루는 기본 오브젝트는 파드이고, 파드는 컨테이너로 이루어져있다.
+컨테이너를 만들고 관리하는 도구가 도커이다.
+쿠버네티스를 이루고 있는 기술 자체는 컨테이너를 벗어날 수 없다. 따라서 트러블 슈팅을 제대로 하려면 컨테이너를 잘 알아야 한다.
+
+### 4.1.1 파드, 컨테이너, 도커, 쿠버네티스의 관계
+파드는 1개 이상의 컨테이너로 이루어져 있다.
+파드들은 워커 노드라는 노드 단위로 관리된다.
+워커 노드와 마스터 노드가 모여 쿠버네티스 클러스터가 된다.
+
+파드는 쿠버네티스로부터 IP를 받아 컨테이너가 외부와 통신할 수 있는 경로를 제공한다.
+컨테이너들이 정상적으로 작동하는지 확인하고 네트워크나 저장 공간을 서로 공유하게 한다.
+파드가 이러한 환경을 만들기 때문에 컨테이너들은 마치 하나의 호스트에 존재하는 것처럼 작동할 수 있다.
+
+정리하면 컨테이너를 돌보는 것이 파드고, 파드를 돌보는 것이 쿠버네티스 워커 노드이며,
+워커 노드를 돌보는 것이 쿠버네티스 마스터이다. 쿠버네티스 마스터 역시 파드(컨테이너)로 이루어져 있다.
+
+이 구조를 이루는 가장 기본적인 컨테이너는 하나의 운영 체제 안에서 커널을 공유하며 개별적인 실행 환경을 제공하는 격리된 공간이다.
+개별적인 실행 환경이란 CPU, 네트워크, 메모리와 같은 시스템 자원을 독자적으로 사용하도록 할당된 환경을 말한다.
+개별적인 실행 환경에서는 실행되는 프로세스를 구분하는 ID도 컨테이너 안에 격리돼 관리된다.
+그래서 각 컨테이너 내부에서 실행되는 애플리케이션들은 서로 영향을 미치지 않고 독립적으로 작동할 수 있다.
+
+각 컨테이너가 독립적으로 작동하기 때문에 여러 컨테이너를 효과적으로 다룰 방법이 필요해졌다.
+오래전부터 유닉스나 리눅스는 하나의 호스트 운영 체제 안에서 자원을 분리해 할당하고, 실행되는 프로세스를 격리해서 관리하는 방법을 제공했다.
+하지만 과정이 복잡하고 전문가만 사용할 수 있는 단점이 있었다.
+이런 복잡한 과정을 쉽게 만들어주는 것이 도커이다.
+도커는 컨테이너를 사용하는 방법을 명령어로 정리한 것이라 보면된다.
+
+### 4.1.2 다양한 컨테이너 관리 도구
+컨테이너 관리 도구는 도커 외에도 여러 가지가 있다.
+* 컨테이너디(Containerd): Docker사에서 컨테이너 런타임 부분을 분리하여 만든 오픈 소스 컨테이너 관리도구로, 2019년 2월 클라우드 네이티브 컴퓨팅 재단의 졸업 프로젝트가 됐다.
+쿠버네티스와 통신에 필요한 CRI(Container Runtime Interface) 규격에 맞춰 구현한 플로그인을 사용해 쿠버네티스와 통합할 수 있다. 컨테이너디는 다른 시스템과 통합해 컨테이너를 관리하는 기능을 제공하기 때문에 컨테이너 관리 도구를 직접 개발하려는 개발자에게 적합하다.
+* 크라이오(CRI-O): 레드햇에서 개발해 2019년 클라우드 네이티브 컴퓨팅 재단에 기부한 오픈 소스 프로젝트로, 현재 인큐베이팅(Incubating)단계에 있다.
+크라이오는 범용적인 컨테이너 관리 도구인 도커나 컨테이너디와 달리 쿠버네티스와 통합하는 것을 주목적으로 한다. 크라이오는 다른 도구보다 가볍고, 단순하며, CRI 규격을 자체적으로 구현하고 있어서 별도의 구성 요소나 플러그인 없이 쿠버네티스와 통합할 수 있다.
+* 카타 컨테이너(Kata Container): 오픈스택 재단(Openstack foundation)에서 후원하는 오픈 소스 컨테이너 관리 도구이다. 컨테이너마다 독립적인 커널을 제공한다는 점에서 기존 컨테이너 방식과 큰 차이가 있다. 카타 컨테이너를 샐행하면 개별 컨테이너를 위한 가벼운 가상 머신을 생성하고 그 위에서 컨테이너가 동작한다.
+따라서 독립적인 커널을 사용하므로 다른 컨테이너의 영향을 받지 않는다. 기술적으로 보면 기존 컨테이너 방식과 가상화 방식의 중간 역역에 있다. 기술적으로는 보안에 좀 더 강하지만, 필요한 CPU나 메모리의 크기가 기존 컨테이너 방식보다 크다.
+* 도커(Docker): Docker사에서 2013년에 만든 컨테이너 관리 도구로, 컨테이너 관리 기능 외에도 컨테이너를 실행하는 데 필요한 이미지를 만들거나 공유하는 등의 다양한 기능을 제공한다.
+도커는 사용자가 명령어를 입력하는 명령어 도구(CLI)와 명령을 받아 들이는 도커 데몬으로 구성돼 있다.
+
+## 4.2 도커로 컨테이너 다루기
+## 4.3 4가지 방법으로 컨테이너 이미지 만들기
+## 4.4 쿠버네티스에서 직접 만든 컨테이너 사용하기
 ---
 # 5. 지속적 통합과 배포 자동화, 젠킨스
 
