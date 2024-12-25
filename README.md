@@ -1796,6 +1796,201 @@ kubectl get pods -w
 도커는 사용자가 명령어를 입력하는 명령어 도구(CLI)와 명령을 받아 들이는 도커 데몬으로 구성돼 있다.
 
 ## 4.2 도커로 컨테이너 다루기
+
+### 4.2.1 컨테이너 이미지 알아보기
+* 이미지 검색하고 내려 받기
+
+이미지는 레지스트리(Registry)라고 하는 저장소에 모여 있다. 레지스트리는 도커 허브처럼 공개된 유명 레지스트리일 수도 있고, 내부에 구축한 레지스트리일 수도 있다.
+이미지는 레지스트리 웹 사이트에서 직접 검색해도 되고, 명령창에서 쿠버네티스 마스터 노드에 접속해 검색할 수 도 있다.
+이때 별도의 레지스트리를 지정하지 않으면 기본으로 도커 허브에서 이미지를 찾는다.
+`docker search <검색어>`를 입력하면 특정한 이름(검색어)을 포함하는 이미지가 있는지 찾는다.
+이미지는 애플리케이션, 미들웨어, 등 고유한 목적에 맞게 패키지돼 있다.
+
+```shell
+docker search nginx
+```
+```shell
+NAME                                     DESCRIPTION                                     STARS               OFFICIAL            AUTOMATED
+nginx                                    Official build of Nginx.                        20456               [OK]                
+bitnami/nginx                            Bitnami container image for NGINX               195                                     [OK]
+ubuntu/nginx                             Nginx, a high-performance reverse proxy & we…   123                                     
+nginx/nginx-ingress                      NGINX and  NGINX Plus Ingress Controllers fo…   98                                      
+nginx/unit                               This repository is retired, use the Docker o…   64                                      
+nginx/nginx-prometheus-exporter          NGINX Prometheus Exporter for NGINX and NGIN…   45                                      
+rapidfort/nginx                          RapidFort optimized, hardened image for NGINX   15                                      
+kasmweb/nginx                            An Nginx image based off nginx:alpine and in…   8                                       
+chainguard/nginx                         Build, ship and run secure software with Cha…   4                                       
+redash/nginx                             Pre-configured nginx to proxy linked contain…   3                                       
+rancher/nginx                                                                            2                                       
+circleci/nginx                           This image is for internal use                  2                                       
+nginx/nginx-ingress-operator             NGINX Ingress Operator for NGINX and NGINX P…   2                                       
+vmware/nginx                                                                             2                                       
+corpusops/nginx                          https://github.com/corpusops/docker-images/     1                                       
+nginx/nginx-quic-qns                     NGINX QUIC interop                              1                                       
+gluufederation/nginx                      A customized NGINX image containing a consu…   1                                       
+nginx/nginxaas-loadbalancer-kubernetes                                                   0                                       
+paketobuildpacks/nginx                                                                   0                                       
+droidwiki/nginx                                                                          0                                       
+intel/nginx                                                                              0                                       
+bitnamicharts/nginx                      Bitnami Helm chart for NGINX Open Source        0                                       
+jitesoft/nginx                           Nginx on alpine linux                           0                                       
+nginx/unit-preview                       Unit preview features                           0                                       
+antrea/nginx                             Nginx server used for Antrea e2e testing        0   
+```
+표시되는 각 열의 의미는 다음과 같다.
+1. INDEX: 이미지가 저장된 레지스트리의 이름.
+2. NAME: 검색된 이미지 이름. 공식 이미지를 제외한 나머지는 '레지스트리 주소/저장소 소유자/이미지 이름' 형태이다.
+3. DESCRIPTION: 이미지에 대한 설명.
+4. STARS: 해당 이미지를 내려받은 사용자에게 받은 평가
+5. OFFICIAL: [OK] 표시는 해당 이미지에 포함된 애플리케이션, 미들웨어 등을 개발한 업체에서 공식적으로 제공한 이미지라는 의미이다.
+6. AUTOMATED: [OK] 표시는 도커 허브에서 자체적으로 제공하는 이미지 빌드 자동화 기능을 활용해 생성한 이미지를 의미한다.
+
+docker search로 찾은 이미지는 `docker pull`로 내려 받을 수 있다ㅏ. 앞에서 찾은 nginx 이미지를 내려 받아 사렾보겠다.
+```shell
+docker pull nginx
+```
+```shell
+Using default tag: latest
+latest: Pulling from library/nginx
+bc0965b23a04: Pull complete 
+650ee30bbe5e: Pull complete 
+8cc1569e58f5: Pull complete 
+362f35df001b: Pull complete 
+13e320bf29cd: Pull complete 
+7b50399908e1: Pull complete 
+57b64962dd94: Pull complete 
+Digest: sha256:fb197595ebe76b9c0c14ab68159fd3c08bd067ec62300583543f0ebda353b5be
+Status: Downloaded newer image for nginx:latest
+```
+이미지를 내려 받을 때 사용하는 태그, 레이어, 이미지의 고유 식별 값 등을 볼 수 있다.
+1. 태그(tag): Using default tag와 함께 뒤에 따라오는 태그 이름을 통해 이미지를 내려받을 때 사용한 태그를 알 수 있다. 아무런 조건을 주지 않고 이미지 이름만으로 pull을 수행하면 기본으로 latest 태그가 적용된다. latest태그는 가장 최신 이미지를 의미 한다.
+2. 레이어(layer): pull을 수행해 내려받은 레이어이다. 하나의 이미지는 여러 개의 레이어로 이루어져 있어서 레이어마다 Pull complete 메세지가 발생한다.
+3. 다이제스트(digest): 이미지의 고유 식별자로, 이미지에 포함된 내용과 이미지의 생성 환경을 식별할 수 있다. 식별자는 해시(hash) 함수로 생성되며 이미지가 동일한지 검증하는 데 사용한다. 다이제스트는 고유한 값이므로 다이제스트가 같은 이미지는 이름이나 태그가 다르더라도 같은 이미지다.
+4. 상태: 이미지를 내려받은 레지스트리, 이미지, 태그 등의 상태 정보를 확인할 수 있다. 형식은 '레지스트리 이림/이미지 이름:태그'이다.
+
+* 이미지 태그
+
+태그는 동일한 이미지에 추가하는 식별자다. 이름이 동일해도 도커 이미지의 버전이나 플랫폼이 다를 수 있기 때문에 이를 구분하는데 사용한다.
+이미지를 내려 받거나 이미지를 기반으로 컨테이너를 구동할 때는 이미지 이름만 사용하고 태그를 명시하지 않으면 latest 태그를 기본으로 사용한다.
+
+
+* 이미지 레이어 구조
+
+1. 이미지 파일은 레이어로 구성되어 있다. nginx의 latest 이미지와 stable 이미지를 비교해 확인 해보겠다.
+```shell
+docker pull nginx:stable
+```
+```shell
+stable: Pulling from library/nginx
+bc0965b23a04: Already exists 
+af38aa266166: Pull complete 
+53a8d9cbfd8a: Pull complete 
+61f8f240c02d: Pull complete 
+6aec90d25585: Pull complete 
+209e8c8a5c7e: Pull complete 
+97fc0bab11f2: Pull complete 
+Digest: sha256:54b2f7b04062caecedd055427c58c43edf314a45fa6f7cee9d9d69e900bb9799
+Status: Downloaded newer image for nginx:stable
+```
+`bc0965b23a04` 레이어가 `Already exists`라고 나오는데 `bc0965b23a04` 이미지가 이미 존재한다는 뜻이다.
+앞서 받은 latest 이미지에 해당 레이어가 있기 때문이다.
+
+2. `docker images <이미지 이름>` 명령을 실행해 내려받은 이미지를 조회한다.
+```shell
+docker images nginx
+```
+```shell
+REPOSITORY          TAG                 IMAGE ID            CREATED             SIZE
+nginx               latest              66f8bdd3810c        3 weeks ago         192MB
+nginx               stable              fa0a8cea5e76        4 months ago        188MB
+```
+각 이미지의 용량은 192mb, 188mb이다. 두 이미지의 용량을 합치면 380mb지만 공유하는 레이어가 있으므로 실제로는 더 작은 용량을 차지한다.
+이처럼 도커로 작성된 컨테이너는 레어이어를 재사용하기 때문에 여러 이미지를 내려받더라도 디스크 용량을 효율적으로 사용할 수 있다.
+
+### 4.2.2 컨테이너 실행하기
+* 컨테이너 단순 실행하기
+
+1. `docker run -d --restart always nginx` 명령으로 새로운 컨테이너를 실행한다.
+```shell
+docker run -d --restart always nginx
+```
+```shell
+614b6f68334629b6f6517dd8c2fd3a7fffcccc3f65f16a03eabba964f0e6066b
+```
+`docker run`으로 컨테이너를 실행하면 결과값으로 16진수 문자열이 나온다. 이 문자열은 컨테이너를 식별할 수 있는 컨테이너ID이다.
+* --d(-detach): 컨테이너를 백그라운드에서 구동한다는 의미다. 옵션을 생략하면 컨테이너 내부에서 실행되는 애플리케이션의 상태가 화면에 계속 표시된다. 이 상태에서 빠져 나오려고 `ctr + c`를 누르면 애플리케이션뿐만 아니라 컨테이너도 함께 중단된다.
+따라서 계속 작동해야 하는 서버나, 데이터베이스 같은 프로그램은 -d 옵션을 붙여 백그라운드에서 작동하게 해야 합니다.
+
+* `--restart always`: 컨테이너 재시작과 관련된 정책을 의미하는 옵션이다. 프로그램에서 예상하지 못한 오류가 발생하거나 리눅스 시스템에서 도커 서비스가 중지되는 경우에 컨테이너도 작동이 중지된다. 이때 중지된 컨테이너를 즉시 재시작하거나 리눅스 시스템에서 도커 서비스가 작동할 때 컨테이너를 자동으로 시작하도록 설정할 수 있다.
+앞으로는 가상 머신을 중지한 후 다시 실행해도 자동으로 컨테이너가 기존 상태를 이어갈수 있게 --restart always 옵션을 사용하겠다.
+
+> 옵션에 따라 달라지는 컨테이너 시작방법
+
+| 값              | 컨테이너 비정상 종료 시   | 도커 서비스 시작 시     |
+|----------------|-----------------|--------------------------|
+| no(기본값)        | 컨테이너를 재시작하지 않음  | 컨테이너를 시작하지 않음|
+| on-failure     | 컨테이너를 재시작함      | 컨테이너를 시작함         |
+| always         | 컨테이너를 재시작함      | 컨테이너를 시작함         |
+| unless-stopped | 컨테이너를 재시작함      | 사용자가 직접 정하지 않은 컨테이너만 시작함 |
+
+2. `docker ps` 명령으로 생성한 컨테이너 상태를 확인한다.
+```shell
+docker ps
+```
+```shell
+CONTAINER ID        IMAGE                  COMMAND                  CREATED             STATUS              PORTS               NAMES
+614b6f683346        nginx                  "/docker-entrypoint.…"   9 minutes ago       Up 9 minutes        80/tcp              blissful_archimedes      k8s.gcr.io/pause:3.2   "/pause"                 2 hours ago         Up 2 hours                              k8s_POD_kube-scheduler-m-k8s_kube-system_e541886a4cda0424b9879a78869adc51_8
+```
+* CONTAINER ID: 컨테이너를 식별하기 위한 고유 ID다.
+* IMAGE: 컨테이너를 만드는데 사용한 이미지다.
+* COMMAND: 컨테이너가 생성될 때 내부엥서 작동할 프로그램을 실행하는 명령어이다. 여기서는 `docker-entrypoint.sh`며 해당 셸이 nginx 이미지로 컨테이너가 생설될 때 nginx 프로그램을 호출해서 서비스 할 수 있도록 해준다.
+* CREATED: 컨테이너가 생성된 시각을 표시한다.
+* STATUS: 컨테이너가 작동을 시작한 시각을 표시한다.
+* PORTS: 컨테이너가 사용하는 포트와 프로토콜을 표시한다. 80/tcp는 컨테이너 내부에서 80번 포트와 TCP 프로토콜을 사용한다는 뜻이다.
+* NAMES: 컨테이너 이름을 표시한다. 이름은 `docker run`에 `--name <이름>` 옵션으로 직접 지정할 수도 있지만, 지정하지 않으면 컨테이너가 시작될 때 도커가 임의로 부여한 값이 나타난다.
+
+3. `docker ps -f id=614` 명령으로 컨테이너를 지정해 검색한다.
+```shell
+docker ps -f id=614
+```
+```shell
+CONTAINER ID        IMAGE               COMMAND                  CREATED             STATUS              PORTS               NAMES
+614b6f683346        nginx               "/docker-entrypoint.…"   15 minutes ago      Up 15 minutes       80/tcp              blissful_archimedes
+```
+docker ps에 -f(--filter) <필터링 대상> 옵션을 주면 검색 결과를 필터링할 수 있다. 필터링 대상을 지정할 때는 key=value 형식으로 입력한다. 이때 value와 정확하게 일치하지 않더라도 문자열을 포함하는 경우를 필터링 한다.
+
+4. 생성된 nginx 컨테이너는 마스터 노드 내부에 존재하므로 curl 127.0.0.1 명령으로 컨테이너가 제공하는 nginx 웹 페이지 정보를 가져와보자
+```shell
+curl 127.0.0.1
+```
+```shell
+curl: (7) Failed connect to 127.0.0.1:80; Connection refused
+```
+정상적인 응답이 돌아오지 않고 `Connection refused` 오류가 발생했다. 왜 오류가 발생했는지 알아보자.
+앞에서 컨테이너 PORTS 열에 표시되는 80/tcp는 컨테이너 내부에서 TCP 프로토콜의 80번 포트를 사용한다는 의미라고 했다.
+하지만 curl 127.0.0.1로 전달한 요청은 로컬호스트의 80번 포트로 전달만 될 뿐 컨테이너까지는 도달하지 못한다.
+즉 호스트에 도달한 후 컨테이너로 도달하기 위한 추가 경로 설정이 돼 있지 않은 상태이다.
+
+따라서 응답을 컨테이너에서 처리해주기를 원한다면 80번으로 들어온 것을 컨테이너에서 받아줄 수 있는 포트로 연결해 주는 설정이 필요하다.
+
+5. docker run에 -p 8080:80 옵션을 추가해 새로운 nginx 컨테이너(nginx-exposed)를 실행한다.
+```shell
+docker run -d -p 8080:80 --name=nginx-exposed --restart always nginx
+```
+6. 컨테이너가 제대로 작동하는지 docker ps로 확인한다.
+```shell
+docker ps -f name=nginx-exposed
+```
+```shell
+CONTAINER ID        IMAGE               COMMAND                  CREATED              STATUS              PORTS                  NAMES
+f92c079e6e0e        nginx               "/docker-entrypoint.…"   About a minute ago   Up 10 seconds       0.0.0.0:8080->80/tcp   nginx-exposed
+```
+0.0.0.0:8080->80/tcp: 0.0.0.0dml 8080번 포트로 들어오는 요청을 컨테이너 내부 80번 포트로 전달한다는 의미이다. 0.0.0.0은 존재하는 모든 네트워크 어댑터를 의미한다. m-k8s 호스트는 자기 자신을 나타내는 127.0.0.1과 외부에 노출된 192.168.1.10 등의 IP를 가지고 있는데, 요청이 호스트에 할당된 어떤 IP의 8080번 포트로 들어오더라도 컨테이너 내부의 80번 포트로 전달된다.
+
+3. 호스트OS의 브라우저에 192.168.1.10:8080을 입력해 컨테이너로 접근할 수 있는지 확인한다.
+
+### 4.2.3 컨테이너 내부 파일 변경하기
+
 ## 4.3 4가지 방법으로 컨테이너 이미지 만들기
 ## 4.4 쿠버네티스에서 직접 만든 컨테이너 사용하기
 ---
