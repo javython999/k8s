@@ -1990,6 +1990,186 @@ f92c079e6e0e        nginx               "/docker-entrypoint.…"   About a minut
 3. 호스트OS의 브라우저에 192.168.1.10:8080을 입력해 컨테이너로 접근할 수 있는지 확인한다.
 
 ### 4.2.3 컨테이너 내부 파일 변경하기
+도커는 컨테이너 내부에서 컨테이너 외부의 파일을 사용할 수있다. 크게 4가지 방법으로 제공한다.
+* `docker cp`: docker cp <호스트 경로> <컨테이너 이름>:<컨테이너 내부 경로> 형식으로 호스트에 위치한 파일을 구동중인 컨테이너 내부에 복사한다. 컨테이너에 임시로 필요한 파일을 단편적으로 전송하기 위해서 사용한다. 또는 컨테이너에 저장돼 있는 설정 및 로그를 추출해 확인하는 목적으로도 사용한다.
+* `Dokcerfile ADD`: 이미지는 Dockerfile을 기반으로 만들어지는데, 이때 Dockerfile에는 ADD라는 구문으로 컨테이너 내부로 복사할 파일을 지정하면 이미지를 빌드할 때 지정한 파일이 이미지 내부로 복사된다.
+이후 해당 이미지를 기반으로 구동한 컨테이너에서는 복사한 파일을 사용할 수 있다. 그러나 사용자가 원하는 파일을 선택해 사용할 수 없다는 약점이 있다.
+* `바인드 마운트`: 호스트 파일 시스템과 컨테이너 내부를 연결해 어느 한쪽에서 작업한 내용이 양쪽에 동시에 반영되는 방법이다. 새로운 컨테이너를 구동할 때도 호스트와 연결할 파일이나 디렉터리의 경로만 지정하면 다른 컨테이너에 있는 파일을 새로 생성한 컨테이너와 연결할 수 있다.
+데이터베이스의 데이터 디렉터리나 서버의 첨부 파일 디렉터리처럼 컨테이너가 바뀌어도 없어지면 안 되는 자료는 이 방법으로 보존할 수 있다.
+* 볼륨: 호스트 파일 시스템과 컨테이너 내부를 연결하는 것은 바인드 마운트와 동일하지만, 호스트의 특정 디렉터리가 아닌 도커가 관리하는 볼륨을 컨테이너와 연결한다.
+여기서 말하는 볼륨은 쿠버네티스에서 살펴본 볼륨 구조와 유사하다. 따라서 도커가 관리하는 볼륨 공간을 NFS와 같은 공유 디렉터리에 생성한다면 다른 호스트에서도 도커가 관리하는 볼륨을 함께 사용할 수 있다.
+
+호스트와 컨테이너를 연결하려면 연결 대상이 되는 컨테이너 내부의 디렉터리 구조를 먼저 알아야 한다.
+현재 정상적으로 노출된 nginx 컨테이너의 구조를 살펴보면 처음 접속할 때 노출되는 페이지는 `/usr/share/nginx/html/index.html`이다.
+따라서 수정해야 하는 파일이 index.html이며 이런한 경로 설정은 `/etc/nginx/nginx.conf`에 존재한다.
+
+1. 컨테이너 내부에 연결한 `/root/html/` 디렉터리를 호스트에 생성한다.
+```shell
+mkdir -p /root/html
+```
+
+2. `docker run` 명령으로 nginx-bind-mount라는 이름의 컨테이너를 구동하고, 컨테이너의 `/usr/share/nginx/html/ 디렉터리와 호스트의 `/root/html/` 디렉터리를 연결한다.
+```shell
+docker run -d -p 8081:80 -v /root/html:/usr/share/nginx/html --restart always --name nginx-bind-mounts nginx
+```
+
+3. nginx-bind-mounts 컨테이너를 조회해 STATUS가 정상(UP n minutes)인지 확인한다.
+```shell
+docker ps -f name=nginx-bind-mounts
+```
+```shell
+CONTAINER ID        IMAGE               COMMAND                  CREATED              STATUS              PORTS                  NAMES
+3d5a8c8cf42b        nginx               "/docker-entrypoint.…"   About a minute ago   Up About a minute   0.0.0.0:8081->80/tcp   nginx-bind-mounts
+```
+4. 컨테이너가 정상적으로 구동했음을 확인하면 컨테이너 내부와 연결된 /root/html/ 디렉터리를 확인한다.
+```shell
+ls /root/html
+```
+이 디렉터리는 사용자가 호스트에 생성한 빈 디렉터리인데, 조회하면 여전히 비어있다. 빈 디렉터리가 컨테이너와 연결 되었기 때문에 현재 컨테이너의 nginx는 초기 화면으로 보여줄 파일이 없다.
+
+5. 브라우저를 열고 `192.168.1.10:8081` 연결해 nginx-bind-mounts 컨테이너에서 실행되는 nginx에 접속되는지 확인한다.
+nginx에 접속하면 index.html 파일을 읽어서 화면에 표시해 주도록 설계돼 있다. 따라서 바운드 마운트 설정에 따라 호스트 디렉터리의 /root/html에 있는 index.html을 노출하려고 하지만
+해당 파일은 존재하지 않기 때문에 403 Forbidden이라는 오류 화면이 출력된다.
+
+6. cp 명령어로 호스트 디렉터리와 컨테이너 디렉터리를 연결할 떄 사용할 index.html을 /root/html/에 복사 한다.
+```shell
+cp ~/_Book_k8sInfra/ch4/4.2.3/index-BindMount.html /root/html/index.html
+```
+7. 다시 브라우저를 열고 `192.168.1.10:8081` 연결해보면 index 페이지가 보이게 된다.
+
+볼륨으로 호스트와 컨테이너 연결하기     
+볼륨은 도커가 직접 관리하며 컨테이너에 제공하는 호스트의 공간이다.
+앞서 배운 바인드 마운트와 어떤차이가 있는지 확인해보자.
+
+1. `docker volume create nginx-volume` 명령으로 볼륨을 생성한다.  nginx-volume은 생성할 볼륨의 이름이다.
+```shell
+docker volume create nginx-volume
+```
+
+2. `docker volume inspect nginx-volume` 명령으로 생성된 볼륨을 조회한다. 볼륨에 적용된 드라이버 종류와 실제호스트에 연결된 디렉터리, 볼륨 이름 등을 조회할 수 있다.
+```shell
+docker volume inspect nginx-volume
+```
+```shell
+[
+    {
+        "CreatedAt": "2024-12-25T14:37:13+09:00",
+        "Driver": "local",
+        "Labels": {},
+        "Mountpoint": "/var/lib/docker/volumes/nginx-volume/_data",
+        "Name": "nginx-volume",
+        "Options": {},
+        "Scope": "local"
+    }
+]
+```
+`Mountpoint` 행의 `/var/lib/docker/volumes/nginx-volume/_data` 디렉터리가 볼륨 디렉터리임을 확인할 수 있다.
+컨테이너 내부와 연결할 떄 전체 디렉터리 경로를 사용하지 않고 nginx-volume이라는 볼륨 이름만으로 간편하게 연결할 수 있다.
+
+3. 볼륨으로 생성된 디렉터리를 확인하자.
+```shell
+ls /var/lib/docker/volumes/nginx-volume/_data
+```
+디렉터리는 현재 비어있다. 디렉터리를 컨테이너와 연결해보자. 앞서 바인드 마운트에서 빈 디렉터리를 컨테이너 내부 디렉터리에 덮어쓰는 것과 어떤 차이가 있는지 살펴보자
+
+4. 컨테이너에 연결한 볼륨을 호스트에 생성했으니 호스트와 컨테이너 디렉터리를 연결할 컨테이너를 구동한다. 기존 컨테이너는 설정을 바꿀 수 없으므로 새로운 컨테이너를 구동해야 한다.
+nginx-volume이라는 이름의 컨테이너를 구동하고 컨테이너 내부의 /usr/share/nginx/html 디렉터리와 호스트의 nginx-volume 볼륨을 연결한다. 
+사용하는 옵션은 `-v [볼륨이름]:[컨테이너 디렉터리]`이다. 앞서 사용한 포트와 중복되지 않게 호스트의 포트번호는 8082로 지정해 컨테이너 내부의 80번 포트와 연결한다.
+```shell
+docker run -d -v nginx-volume:/usr/share/nginx/html -p 8082:80 --restart always --name nginx-volume nginx
+```
+```shell
+docker run -d -v nginx-volume:/usr/share/nginx/html -p 8082:80 --restart always --name nginx-volume nginx
+```
+5. 볼륨 디렉터리의 내용을 다시 확인한다.
+```shell
+ls /var/lib/docker/volumes/nginx-volume/_data
+```
+```shell
+50x.html  index.html
+```
+컨테이너 내부에 있는 50x.html, index.html 파일을 보존하는 것을 확인할 수 있다.
+
+6. 웹 브라우저로 192.168.1.10:8082로 연결해 nginx-volume 컨테이너의 nginx에 접속한다. 볼륨은 바인드 마운트와 다르게 index.html을 삭제하지 않기 때문에 index.html의 내용이 그대로 표시 된다.
+
+7. ningx-volume에 cp 명령어로 바꿀 파일을 볼륨 디렉터리로 복사해 볼륨에서 변경한 내용이 컨테이너 디렉터리에 동기화 되는지 테스트 한다.
+```shell
+cp ~/_Book_k8sInfra/ch4/4.2.3/index-Volume.html /var/lib/docker/volumes/nginx-volume/_data/index.html
+```
+
+8. 다시 브라우저로 192.168.1.10:8082 접속하면 변경된 index.html의 내용이 표시된다.
+
+### 4.2.4 사용하지 않는 컨테이너 정리하기
+사용이 끝나고 더이상 사용하지 않을 컨테이너라면 공간을 확보하기 위해 삭제하는 것이 좋다.
+컨테이너나 이미지를 삭제하기 전에 먼저 컨테이너를 정지해야 한다. 삭제할 때 말고도 동일한 호스트의 포트를 사용하는 컨테이너를 배포하거나 작동 중인 컨테이너의 사용 자체를 종료할 때도 먼저 컨테이너를 정지해야 한다.
+
+1. `docker ps -f ancestor=nginx` 명령으로 nginx 이미지를 기반으로 생성된 컨테이너를 조회한다. `ancestor` 키는 컨테이너를 생성하는데 사용한 이미지를 기준으로 필터링 한다.
+```shell
+docker ps -f ancestor=nginx
+```
+```shell
+CONTAINER ID        IMAGE               COMMAND                  CREATED             STATUS              PORTS                  NAMES
+7fc7746cf341        nginx               "/docker-entrypoint.…"   14 minutes ago      Up 14 minutes       0.0.0.0:8082->80/tcp   nginx-volume
+3d5a8c8cf42b        nginx               "/docker-entrypoint.…"   36 minutes ago      Up 36 minutes       0.0.0.0:8081->80/tcp   nginx-bind-mounts
+f92c079e6e0e        nginx               "/docker-entrypoint.…"   15 hours ago        Up 42 minutes       0.0.0.0:8080->80/tcp   nginx-exposed
+614b6f683346        nginx               "/docker-entrypoint.…"   16 hours ago        Up 42 minutes       80/tcp                 blissful_archimedes
+```
+2. 컨테이너를 정지하는 명령은 docker stop <컨테이너 이름| ID> 이다. 4번째 컨테이너를 정지해보자.
+```shell
+docker stop blissful_archimedes
+```
+3. 3번째 컨테이너를 컨테이너 ID로 종료해보자.
+```shell
+docker stop f92c079e6e0e
+```
+4. 컨테이너를 하나씩 정지하면 번거로우니 nginx 이미지를 사용하는 모든 컨테이너를 한꺼번에 정지해보자.
+컨테이너 조회 명령에 -q(--quite) 옵션을 추가해 컨테이너 ID만 줄력한다.
+```shell
+docker ps -q -f ancestor=nginx
+```
+
+5. 앞에서 사용한 명령을 docker stop에 인자로 사용하도록 `$()`에 넣는다. 실행하면 nginx 이미지를 사용한 컨테이너가 모두 정지된다.
+```shell
+docker stop $(docker ps -q -f ancestor=nginx)
+```
+
+6. 모든 컨테이너가 정지됐는지 `docker ps -f ancestor=nginx` 명령으로 다시 확인한다.
+```shell
+docker ps -f ancestor=nginx
+```
+```shell
+CONTAINER ID        IMAGE               COMMAND             CREATED             STATUS              PORTS               NAMES
+```
+
+7. 컨테이너가 모두 정지됐으나 삭제된 것은 아니다. 정지된 컨테이너를 포함해 모든 컨테이너 목록을 조회한다. docker ps에 `-a(--all)` 옵션을 주면 정지된 컨테이너를 포함해 조회가 된다. 
+```shell
+docker ps -a -f ancestor=nginx
+```
+이때 정지한 컨테이너를 다시 시작하고 싶으면 `docker start <컨테이너 이름 | ID>`를 입력하면 된다.
+
+정지한 컨테이너가 더 이상 필요 없으면 삭제해 사용 중인 컨테이너 목록을 관리하고, 사용하지 않는 컨테이너 이미지를 삭제해 저장 공간을 확보한다.
+
+1. 컨테이너는 `docker rm <컨테이너 이름 | ID>` 명령으로 삭제한다. 이 명령은 한꺼번에 컨테이너를 정지할 때 사용했던 방법을 그대로 사용한다.
+기존 옵션과 조합해 `docker rm $(docker ps -aq -f ancestor=nginx)`로 현재 정지된 모든 컨테이너를 삭제한다.
+```shell
+docker rm $(docker ps -aq -f ancestor=nginx)
+```
+
+2. 컨테이너가 정상적으로 삭제됐는지 docker ps -a -f ancestor=nginx 명령으로 확인한다.
+```shell
+docker ps -a -f ancestor=nginx
+```
+```shell
+CONTAINER ID        IMAGE               COMMAND             CREATED             STATUS              PORTS               NAMES
+```
+
+3. 컨테이너는 모두 삭제했지만, 내려받은 이미지는 아직 남아있다. nginx:latest, nginx:stable 이미지를 하나씩 삭제해도 되지만 
+`docker rmi $(docker images -q nginx)` 명령으로 한번에 삭제해보자.
+여기서 `rmi`는 remove image를 뜻한다.
+```shell
+docker rmi $(docker images -q nginx)
+```
+
 
 ## 4.3 4가지 방법으로 컨테이너 이미지 만들기
 ## 4.4 쿠버네티스에서 직접 만든 컨테이너 사용하기
