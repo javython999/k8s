@@ -2172,6 +2172,226 @@ docker rmi $(docker images -q nginx)
 
 
 ## 4.3 4가지 방법으로 컨테이너 이미지 만들기
+
+컨테이너 인프라 환경을 구성할 때 이미 제공된 이미지를 사용하는 경우도 있지만, 직접 만든 애플리케이션으로 컨테이너를 만들 수 도 있다.
+컨테이너를 만드는 방법은 다음과 같이 4가지가 있다.
+1. 기본적인 방법
+2. 용량 줄이기
+3. 컨테이너 내부 빌드
+4. 멀티 스테이지
+
+### 4.3.1 기본적인 방법
+기본적인 컨테이너 빌드 과정은 다음과 같다.
+* 자바 소스 빌드
+* 도커파일 작성
+* 도커파일 빌드
+* 빌드 완료
+
+1. 기본적인 컨테이너 빌드 도구와 파일이 있는 빌드 디렉터리로 이동해 어떤 파일이 있는지 확인한다.
+```shell
+cd ~/_Book_k8sInfra/ch4/4.3.1
+```
+```shell
+Dockerfile  mvnw  pom.xml  src
+```
+* DockerFile: 컨테이너 이미지를 빌드하기 위한 정보를 담고 있다.
+* mvnw: 메이븐 래퍼라는 이름의 리눅스 스크립트로, 메이븐 실행을 위한 환경 설정을 자동화 한다.
+* pom.xml: 메이븐 래퍼가 작동할 때 필요한 절차와 빌드 정보를 담고 있다.
+* src(디렉터리): 메이븐으로 빌드할 자바 소스 디렉터리이다.
+
+2. 소스 코드가 자바로 작성돼 있으므로 실행 가능한 바이너리(Jar)로 만들려면 현재 시스템에 자바 개발도구(JDK)를 설치해야 한다.
+```shell
+yum install java-1.8.0-openjdk-devel.x86_64 -y
+```
+
+3. 자바를 빌드할 때 메이븐(Maven)을 사용한다. 메이븐은 `clean package` 명령으로 실행한다. 이 명령은 빌드를 진행할 디렉터리를 비우고(clean) Jar(package)를 생성하라는 의미이다.
+```shell
+chmod 700 mvnw
+./mvnw clean package
+```
+
+4. 자바 빌드가 끝나면 생성되는 Jar파일을 확인한다.
+```shell
+ls target
+```
+
+5. docker build 명령으로 컨테이너 이미지를빌드한다. 여기서 사용된 -t(tag)는 만들어질 이미지를 의미하고 .(dot)은 이미지에 원하는 내용을 추가하거나 변경하는 데 필요한 작업 공간을 현재 디렉터리로 지정한다는 의미이다.
+```shell
+docker build -t basic-img .
+```
+```shell
+Sending build context to Docker daemon   17.7MB
+Step 1/6 : FROM openjdk:8
+8: Pulling from library/openjdk
+001c52e26ad5: Pull complete 
+d9d4b9b6e964: Pull complete 
+2068746827ec: Pull complete 
+9daef329d350: Pull complete 
+d85151f15b66: Pull complete 
+52a8c426d30b: Pull complete 
+8754a66e0050: Pull complete 
+Digest: sha256:86e863cc57215cfb181bd319736d0baf625fe8f150577f9eb58bd937f5452cb8
+Status: Downloaded newer image for openjdk:8
+ ---> b273004037cc
+Step 2/6 : LABEL description="Echo IP Java Application"
+ ---> Running in d043c2a75b9f
+Removing intermediate container d043c2a75b9f
+ ---> bbf39f2198a2
+Step 3/6 : EXPOSE 60431
+ ---> Running in c0d29a64ac34
+Removing intermediate container c0d29a64ac34
+ ---> ef584f50cf19
+Step 4/6 : COPY ./target/app-in-host.jar /opt/app-in-image.jar
+ ---> bc6cfdfc8790
+Step 5/6 : WORKDIR /opt
+ ---> Running in eae2775dcd1b
+Removing intermediate container eae2775dcd1b
+ ---> 6fac50c96e66
+Step 6/6 : ENTRYPOINT [ "java", "-jar", "app-in-image.jar" ]
+ ---> Running in d20531e0139a
+Removing intermediate container d20531e0139a
+ ---> 86e30417008b
+Successfully built 86e30417008b
+Successfully tagged basic-img:latest
+```
+빌드 내용을 이해하려면 도커 빌드에 사용된 Dockerfile을 살펴봐야 한다.
+```yaml
+FROM openjdk:8
+LABEL description="Echo IP Java Application"
+EXPOSE 60431
+COPY ./target/app-in-host.jar /opt/app-in-image.jar
+WORKDIR /opt
+ENTRYPOINT [ "java", "-jar", "app-in-image.jar" ]
+```
+* 1번 라인: FROM <이미지 이름>:[태그] 형식으로 이미지를 가져온다. 가져온 이미지 내부에서 컨테이너 이미지를 빌드한다.
+누군가가 만들어 놓은 이미지에 필요한 부분을 추가한다고 보면된다. 여기서는 openjdk를 기초 이미지로 사용했다. 기초 이미지를 어떤 것을 선택하느냐에 따라 다양한 환경의 컨테이너를 빌드할 수 있다.
+* 2번 라인: LABEL <레이블 이름>=<값>의 형식으로 이미지에 부가적인 설명을 위한 레이블을 추가할 때 사용한다. `description="Echo IP Java Application"`라는 값을 담은 description 레이블을 추가 했다.
+* 3번 라인: EXPOSE <숫자>의 형식으로 생성된 이미지로 컨테이너를 구동할 때 어떤 포트를 사용하는지 알려준다. EXPOSE를 사용한다고 해서 컨테이너를 구동할 때 자동으로 해당 포트를 호스트 포으와 연결하지 않는다. 외부와 연결하려면 지정한 포트를 호스트 포트와 연결해야 한다는 정보를 제공할 뿐이다. 실제로 외부에서 접속하려면 docker run으로 이미지를 컨테이너로 빌드할 때, 반드시 -p 옵션을 넣어 포트를 연결해야 한다.
+* 4번 라인: 호스트에서 새로 생성하는 컨테이너 이미지로 필요한 파일을 복사한다. COPY <호스트 경로> <컨테이너 경로>의 형식이다.
+* 5번 라인: 이미지의 현재 작업 위치를 /opt로 변경한다.
+* 6번 라인: ENTRYPOINT ["명령어", "옵션"... "옵션"]의 형식이다. 컨테이너 구동시 ENTRYPOINT 뒤에 나오는 대괄호 `[ ]`안에 든 명령을 실행한다.
+콤마(`,`)로 구분된 문자열 중 첫 번째 문자열은 실행할 명령어고, 두 번째 문자열부터 명령어를 실행할 때 추가하는 옵션이다.
+이 명령어는 실행된 프로세스 컨테이너 내부에서 첫 번쨰로 실행됐다는 의미조 PID는 1이 된다.
+
+6. 5단계에서 실행한 이미지를 확인한다. 이미지가 latest 태그로 생성된 것을 확인할 수 있다. IMAGE ID는 5단계에서 빌드할 때 마지막에 표시된 값과 동일 하다.
+```shell
+docker image basic-img
+```
+```shell
+REPOSITORY          TAG                 IMAGE ID            CREATED             SIZE
+basic-img           latest              86e30417008b        23 minutes ago      544MB
+```
+
+7. docker build에 옵션(-t)을 추가해 1.0과 2.0 태그의 이미지도 생성해 보자. 캐시가 적용돼 매우 빠르게 빌드 된다.
+```shell
+docker build -t basic-img:1.0 -t basic-img:2.0 .
+```
+```shell
+Sending build context to Docker daemon   17.7MB
+Step 1/6 : FROM openjdk:8
+ ---> b273004037cc
+Step 2/6 : LABEL description="Echo IP Java Application"
+ ---> Using cache
+ ---> bbf39f2198a2
+Step 3/6 : EXPOSE 60431
+ ---> Using cache
+ ---> ef584f50cf19
+Step 4/6 : COPY ./target/app-in-host.jar /opt/app-in-image.jar
+ ---> Using cache
+ ---> bc6cfdfc8790
+Step 5/6 : WORKDIR /opt
+ ---> Using cache
+ ---> 6fac50c96e66
+Step 6/6 : ENTRYPOINT [ "java", "-jar", "app-in-image.jar" ]
+ ---> Using cache
+ ---> 86e30417008b
+Successfully built 86e30417008b
+Successfully tagged basic-img:1.0
+Successfully tagged basic-img:2.0
+```
+8. 생성된 이미지를 확인한다. 이미지가 모두 ID와 용량이 같은 것을 볼 수 있다. 즉, 이미지들은 태그 정보만 다를 뿐 모두 같은 이미지이며, 한 공간을 사용한다. 리눅스의 소프트 링크와 비슷하다고 보면 된다.
+```shell
+docker images basic-img
+```
+```shell
+REPOSITORY          TAG                 IMAGE ID            CREATED             SIZE
+basic-img           1.0                 86e30417008b        28 minutes ago      544MB
+basic-img           2.0                 86e30417008b        28 minutes ago      544MB
+basic-img           latest              86e30417008b        28 minutes ago      544MB
+```
+
+9. Dockerfile 내용 중에서 일부만 변경하면 어떻게 되는지 확인해 보자. sed를 사용해 Dockerfile 2번째 줄에 있는 Application 부분을 Development로 변경하고 다시 빌드 해보자. 이때 버전이 중복되지 않게 3.0 태그를 사용한다.
+```shell
+sed -i 's/Application/Development/' Dockerfile
+docker build -t basic-img:3.0 .
+```
+```shell
+Sending build context to Docker daemon   17.7MB
+Step 1/6 : FROM openjdk:8
+ ---> b273004037cc
+Step 2/6 : LABEL description="Echo IP Java Development"
+ ---> Running in e67e0cd0e70f
+Removing intermediate container e67e0cd0e70f
+ ---> 11a9cf7fe6b4
+Step 3/6 : EXPOSE 60431
+ ---> Running in 2d24398a215a
+Removing intermediate container 2d24398a215a
+ ---> 5070bb1860c9
+Step 4/6 : COPY ./target/app-in-host.jar /opt/app-in-image.jar
+ ---> 180296e57cf1
+Step 5/6 : WORKDIR /opt
+ ---> Running in 78ac316d988f
+Removing intermediate container 78ac316d988f
+ ---> f2a2e0437930
+Step 6/6 : ENTRYPOINT [ "java", "-jar", "app-in-image.jar" ]
+ ---> Running in 9e384bafeceb
+Removing intermediate container 9e384bafeceb
+ ---> 25698eff5b3c
+Successfully built 25698eff5b3c
+Successfully tagged basic-img:3.0
+```
+10. 생성된 이미지를 확인한다. 결과를 보면 완전히 다른 ID가 생성됐다. 이름은 같지만 실제로는 다른 컨테이너 이미지이다.
+```shell
+REPOSITORY          TAG                 IMAGE ID            CREATED             SIZE
+basic-img           3.0                 25698eff5b3c        57 seconds ago      544MB
+basic-img           1.0                 86e30417008b        30 minutes ago      544MB
+basic-img           2.0                 86e30417008b        30 minutes ago      544MB
+basic-img           latest              86e30417008b        30 minutes ago      544MB
+```
+
+11. 생성한 컨테이너 이미지가 컨테이너로 작동하는지 확인한다. docker run으로 컨테이너를 실행하고 docker ps로 컨테이너 상태를 출력한다.
+```shell
+docker run -d -p 60431:80 --name basic-run --restart always basic-img
+docker ps -f name=basic
+```
+```shell
+CONTAINER ID        IMAGE               COMMAND                  CREATED              STATUS              PORTS                              NAMES
+bc05e35f6a85        basic-img           "java -jar app-in-im…"   About a minute ago   Up 30 seconds       60431/tcp, 0.0.0.0:60431->80/tcp   basic-run
+```
+
+12. curl을 이용해 컨테이너가 정상적으로 외부 요청에 응답하는지 확인해보자.
+```shell
+curl 127.0.0.1:60431
+```
+```shell
+src: 172.17.0.1 / dest: 127.0.0.1
+```
+
+13. 이미지가 제대로 작동하는 것을 확인했으니 작동중인 컨테이너를 -f(force) 옵션으로 바로 삭제한다.
+```shell
+docker rm -f basic-run
+```
+
+14. 빌드한 컨테이너 이미지를 모두 삭제한다.
+```shell
+docker rmi -f $(docker images -q basic-img)
+```
+15. 다음 절에서 빌드할 이미지와 용량 비교를 위해 컨테이너 이미지 하나를 다시 빌드 한다.
+```shell
+docker build -t basic-img .
+```
+
+
 ## 4.4 쿠버네티스에서 직접 만든 컨테이너 사용하기
 ---
 # 5. 지속적 통합과 배포 자동화, 젠킨스
