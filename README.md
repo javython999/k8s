@@ -2391,6 +2391,260 @@ docker rmi -f $(docker images -q basic-img)
 docker build -t basic-img .
 ```
 
+### 4.3.2 컨테이너 용량 줄이기
+컨테이너 이미지의 용량을 줄여 빌드하는 방법을 알아보자.
+이미지의 용량을 줄여 빌드하는 과정은 다음과 같다.
+* 도커파일 작성
+* 도커파일 빌드
+* 빌드 완료
+
+기본적인 방법보다 1단계가 줄고, 기초 이미지가 openjdk에서 GCR(Google Container Registry)에서 제공하는 distroles로 변경된다.
+
+1. 컨테이너 용량을 줄여서 빌드하는 과정을 담고 있는 디렉터리로 이동해 어떤 파일이 있는지 살펴보자
+```shell
+cd ~/_Book_k8sInfra/ch4/4.3.2
+ls
+```
+```shell
+build-in-host.sh  Dockerfile  mvnw  pom.xml  src
+```
+
+2. 추가된 파일을 cat으로 살펴보자.
+```shell
+cat build-in-host.sh
+```
+```shell
+#!/usr/bin/env bash
+yum -y install java-1.8.0-openjdk-devel
+./mvnw clean package
+```
+
+3. Dockerfile은 변경이 있다.
+```shell
+cat Dockerfile
+```
+```shell
+FROM gcr.io/distroless/java:8
+LABEL description="Echo IP Java Application"
+EXPOSE 60432
+COPY ./target/app-in-host.jar /opt/app-in-image.jar
+WORKDIR /opt
+ENTRYPOINT [ "java", "-jar", "app-in-image.jar" ]
+```
+사용되는 기초이미지가 openjdk에서 gcr.io/distroless/java로 변경되었다.
+distroless는 자바 실행을 위해 경량화된 이미지이다. 기본 방법으로 openjdk 이미지를 설치할 호스트에 자바 개발 도구인 java-1.8.0-openjdk-devel도 함께 설치했다.
+그리고 자바 소스를 빌드해서 실행가능한 바이너리인 Jar을 만들어 COPY 명령으로 새롭게 만들어질 컨테이너에 이미지(optimal-img)에 보냈다.
+이 과정에서 openjdk 이미지에 포함된 자바 개발 도구는 불필요하게 낭비되는 공간이다.
+
+4. 경량화 이미지를 빌드하기 전에 메이븐에 실행 권한을 부여하자.
+```shell
+chmod 700 mvnw
+```
+
+5. build-in-host.sh를 실행해 경량화 이미지를 빌드한다.
+```shell
+./build-in-host.sh
+```
+
+6. 용량을 줄여 빌드한 컨테이너 이미지와 기본 방법으로 빌드한 이미지를 비교한다.
+이때 도커 이미지가 다수 존재하므로 현재 새로 생성된 이미지만 볼 수 있게 head -n 3 옵션을 사용한다.
+```shell
+docker images | head -n 3
+```
+```shell
+REPOSITORY                           TAG                 IMAGE ID            CREATED              SIZE
+optimal-img                          latest              8b21b08e7897        About a minute ago   148MB
+basic-img                            latest              d35a68291982        24 hours ago         544MB
+```
+경량화 빌드를 한 이미지가 용량이 훨씬 작다.
+
+7. 생성한 컨테이너 이미지가 컨테이너로 작동하는지 docker run 명령으로 컨테이너를 실행해 curl로 확인한다.
+```shell
+docker run -d -p 60432:80 --name optimal-run --restart always optimal-img
+curl 127.0.0.1:60432
+```
+```shell
+src: 172.17.0.1 / dest: 127.0.0.1
+```
+
+8. 컨테이너가 정상작동하는 것을 확인했으니 빌드한 컨테이너를 삭제한다.
+```shell
+docker rm -f optimal-run
+```
+openjdk 이미지에 개발도구가 포힘돼 있는데, 왜 openjdk를 호스트에 설치하고 빌드하고 COPY로 넘기는 번거로운 과정을 진행한 걸까?
+매우 좋은 지적이다. 기초 이미지인 openjdk에서 자바 소스를 빌드하면 어떻게 되는지 확인해보자.
+
+### 4.3.3 컨테이너 내부에서 컨테이너 빌드하기
+번거로운 과정 없이 바로 자바 소스를 컨테이너 이미지에서 빌드하면 어떻게 되는지 살펴보자.
+과정은 다음과 같다.
+
+* 도커파일 작성
+* 도커파일 빌드
+* 빌드 완료
+
+1. openjdk 이미지에서 자바 소스를 빌드하는 내용이 있는 디렉터리로 이동해 어떤 파일이 있는지 살펴보자.
+```shell
+cd ~/_Book_k8sInfra/ch4/4.3.3/
+ls
+```
+```shell
+Dockerfile
+```
+
+2. Dockerfile의 내용을 살펴보면 역시 틀별한 내용이 없다. 이미지 내부에 소스코드를 내려 받으려고 깃을 사용했고, 내려받은 소스 코드를 이미지 내부에서 실행하기 위해 RUN을 추가 했다.
+그리고 이미지 내부에서 파일의 위치만 옮기면 되므로 COPY가 아닌 mv를 사용했다.
+```shell
+cat Dockerfile
+```
+```shell
+FROM openjdk:8
+LABEL description="Echo IP Java Application"
+EXPOSE 60433
+RUN git clone https://github.com/iac-source/inbuilder.git
+WORKDIR inbuilder
+RUN chmod 700 mvnw
+RUN ./mvnw clean package
+RUN mv target/app-in-host.jar /opt/app-in-image.jar
+WORKDIR /opt
+ENTRYPOINT [ "java", "-jar", "app-in-image.jar" ]
+```
+
+3. 이미지를 빌드하기 전에 이미지 내부에 내려받은 inbuilder 저장소가 어떤 구조인지 확인한다.
+확인해보면 주요 파일은 모두 같다. 
+```shell
+git clone https://github.com/iac-source/inbuilder.git
+```
+```shell
+Cloning into 'inbuilder'...
+remote: Enumerating objects: 53, done.
+remote: Counting objects: 100% (53/53), done.
+remote: Compressing objects: 100% (36/36), done.
+remote: Total 53 (delta 10), reused 38 (delta 2), pack-reused 0 (from 0)
+Unpacking objects: 100% (53/53), done.
+```
+4. docker build로 Dockerfile을 호출해서 컨테이너 이미지를 빌드한다.
+```shell
+docker build -t nohost-img .
+```
+
+5. 새로 빌드한 컨테이너 이미지를 기존 이미지들과 비교 한다. 새로 생성된 nohost-img가 618MB로 이미지 중에 가장 용량이 크다. nohost-img는 컨테이너 내부에서 빌드를 진행하기 때문에 빌드 중간에 생성한 파일들과 내려받은 라이브러리 캐시들이 최종 이미지인 nohost-img에 그대로 남는다.
+따라서 빌드 최종 결과물만 전달했던 basic-img 보다 더 커지게 된다.
+```shell
+docker images | head -n 4
+```
+```shell
+REPOSITORY                           TAG                 IMAGE ID            CREATED              SIZE
+nohost-img                           latest              9906e19e479b        About a minute ago   633MB
+optimal-img                          latest              8b21b08e7897        15 minutes ago       148MB
+basic-img                            latest              d35a68291982        24 hours ago         544MB
+```
+
+openJdk 이미지를 기초 이미지로 컨테이너 내부에서 자바 소스로 빌드한 결과, 가장 큰 컨테이너 이미지를 얻었다. 컨테이너 이미지는 커지면 커질 수록 비효율적으로 작동한다.
+따라서 openJdk 컨테이너 내부에서 컨테이너를 빌드하는 것은 좋지 않는 방법이다.
+하지만 Dockerfile 하나만 빌드하면 컨테이너가 바로 생성되는 편리함을 포기할 수는 없다. 다른 방법은 없을까?
+
+### 4.3.4 최적화해 컨테이너 빌드하기
+지금까지 소개한 빌드 방법은 이미지 용량이 커지거나 빌드 과정이 번거로운 등의 단점이 있다. 마지막으로 소개할 멀티 스테이지 빌드 방법은 최종 이미지의 용량을 줄일 수 있고 호스트에 어떠한 빌드 도구도 설치할 필요가 없다.
+멀티 스테이지를 이용한 컨테이너 이미지 빌드 과정은 다음과 같다.
+
+* 도커파일 작성
+* 도커파일 빌드
+* 빌드 완료
+
+멀티 스테이지 빌드는 docker-ce 17.06 버전부터 지원된다. 따라서 현재 우리가 사용하는 도커 버전(docker 1.13.1)을 업그레이드 해야 한다.
+따라서 현재 사용 중인 쿠버네티스 클러스터를 삭제하고 docker-ce 18.09.9가 설치된 새로운 쿠버네티스 클러스터를 다시 만들겠다.
+
+1. 쿠버네티스 클러스터를 삭제하기 전에 kubectl get node -o wide 명령으로 현재 사용하는 도커 버전(CONTAINER-RUNTIME 열)을 확인한다.
+```shell
+kubectl get nodes -o wide
+```
+```shell
+NAME     STATUS   ROLES    AGE    VERSION   INTERNAL-IP     EXTERNAL-IP   OS-IMAGE                KERNEL-VERSION                CONTAINER-RUNTIME
+m-k8s    Ready    master   10d    v1.18.4   192.168.1.10    <none>        CentOS Linux 7 (Core)   3.10.0-1160.90.1.el7.x86_64   docker://1.13.1
+w1-k8s   Ready    <none>   10d    v1.18.4   192.168.1.101   <none>        CentOS Linux 7 (Core)   3.10.0-1160.90.1.el7.x86_64   docker://1.13.1
+w2-k8s   Ready    <none>   10d    v1.18.4   192.168.1.102   <none>        CentOS Linux 7 (Core)   3.10.0-1160.90.1.el7.x86_64   docker://1.13.1
+w3-k8s   Ready    <none>   10d    v1.18.4   192.168.1.103   <none>        CentOS Linux 7 (Core)   3.10.0-1160.90.1.el7.x86_64   docker://1.13.1
+w4-k8s   Ready    <none>   5d7h   v1.18.4   192.168.1.104   <none>        CentOS Linux 7 (Core)   3.10.0-1160.90.1.el7.x86_64   docker://1.13.1
+```
+
+2. 호스트 윈도의 명령 창에서 Vagrantfile에 있는 c:\HashiCorp\_Book_k8sInfra-main\ch3\3.1.3 디렉터리로 이동한다.
+기존에 사용하던 가상 머신들을 2장에서 배운 vagrant destroy -f 명령으로 제거 한다.
+```shell
+cd c:\HashiCorp\_Book_k8sInfra-main\ch3\3.1.3
+vagrant destroy -f
+```
+
+3. c:\HashiCorp\_Book_k8sInfra-main\ch4\4.3.4\k8s-SingleMaster-18.9_9_w_auto-compl 디렉터리로 이동한다.
+vagrant up 명령을 실행해 멀티 스테이지를 지원하는 버전의 도커가 포함된 새로운 쿠버네티스 클러스터 환경을 구성한다.
+```shell
+cd c:\HashiCorp\_Book_k8sInfra-main\ch4\4.3.4\k8s-SingleMaster-18.9_9_w_auto-compl
+vagrant up
+```
+4. 가상 머신 구성이 완료되면 m-k8s 노드에 접속한다.
+
+5. kubectl get nodes -o wide로 도커 버전을 확인한다.
+```shell
+
+```
+
+6. 멀티 스테이지를 위한 파일이 있는 디렉터리(~/_Book_k8sInfra/ch4/4.3.4)로 이동해 Dockerfile이 있는지 확인한다.
+```shell
+cd ~/_Book_k8sInfra/ch4/4.3.4/
+ls
+```
+```shell
+Dockerfile k8s-SingleMaster-18.9_9_w_auto-compl
+```
+
+7. Dockerfile을 살펴보면 멀티 스테이지의 핵심은 빌드하는 위치와 최종 이미지를 '분리'하는 것이다. 그래서 최종 이미지는 빌드된 Jar을 가지고 있지만, 용량은 줄일 수 있다.
+```shell
+FROM openjdk:8 AS int-build # openjdk 이미지에 int-build라는 별칭을 붙임
+LABEL description="Java Application builder"
+RUN git clone https://github.com/iac-source/inbuilder.git
+WORKDIR inbuilder
+RUN chmod 700 mvnw
+RUN ./mvnw clean package
+
+FROM gcr.io/distoless/java:8
+LABEL description="Echo IP Java Application"
+EXPOSE 60434
+COPY --from=int-build inbuilder/target/app-in-host.jar /opt/app-in-image.jar
+WORKDIR /opt
+ENTRYPOINT [ "java", "-jar", "app-in-image.jar" ]
+```
+
+8. 멀티 스테이지 방식으로 작성된 Dockerfile로 컨테이너 이미지를 빌드한다.
+```shell
+docker build -t multistage-img .
+```
+
+9. 멀티 스테이지로 빌드된 컨테이너 이미지의 용량을 확인하면 optimal-img와 같다. 두 컨테이너 이미지는 빌드 단계가 같고 자바 소스를 호스트에서 빌드했느냐, 컨테이너에서 내에서 빌드했느냐 차이 밖에 없다.
+```shell
+docker images | head -n 3
+```
+```shell
+REPOSITORY                           TAG                 IMAGE ID            CREATED              SIZE
+multistage-img                       latest              f3e2d2fae82b        About a minute ago   148MB
+<none>                               <none>              6c0ab6aab3b0        About a minute ago   615MB
+```
+
+10. 앞에서 확인한 컨테이너 이미지 중 <none>으로 표시되는 이미지가 있다. 이름이 없는 이런 이미지를 댕글링(dangling) 이미지라고 한다. 멀티 스테이지 과정에서 자바 소스를 빌드 하는 과정에서 생성된 이미지로 보면 된다.
+공간을 적게 사용하는 이미지를 만드는 것이 목적이므로 댕글링 이미지(dangling=true)를 삭제한다.
+```shell
+docker rmi $(docker images -f dangling=true -q)
+```
+11. docker run을 컨테이너를 실행한다. 생성한 컨테이너 이미지로 빌드한 컨테이너가 잘 동작하는지 curl로 확인한다.
+```shell
+docker run -d -p 60434:80 --name=multistage-run --restart always multistage-img
+curl 127.0.0.1:60434
+```
+```shell
+src: 172.17.0.1 / dest: 127.0.0.1
+```
+12. 컨테이너가 정상적으로 작동하므로 컨테이너를 삭제하고 다음 실습을 위해 홈 디렉터리로 이동한다.
+```shell
+docker rm -f multistage-run
+```
 
 ## 4.4 쿠버네티스에서 직접 만든 컨테이너 사용하기
 ---
