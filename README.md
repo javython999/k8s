@@ -2647,6 +2647,327 @@ docker rm -f multistage-run
 ```
 
 ## 4.4 쿠버네티스에서 직접 만든 컨테이너 사용하기
+직접 만든 이미지를 쿠버네티스에서 사용하는 방법을 알아보자.
+
+### 4.4.1 쿠버네티스에서 도커 이미지 구동하기
+쿠버네티스는 컨테이너를 효과적으로 다루기 위해 만들어졌고 컨테이너인 파드도 쉽게 부를 수 있다. 따라서 직접 만든 컨테이너 이미지도 kubectl 명령으로 쿠버네티스 클러스터에서 바로 구동할 수 있다.
+
+1. multistage-img 이미지가 노드에 존재하는지 `docker images multistage-img` 명령으로 확인한다.
+```shell
+docker images multistage-img
+```
+```shell
+REPOSITORY          TAG                 IMAGE ID            CREATED             SIZE
+multistage-img      latest              f3e2d2fae82b        14 hours ago        148MB
+```
+
+2. kubectl create 명령으로 디플로이먼트를 생성한다. 이때 --image를 옵션으로 주어 multistage-img를 사용하게 하고 이름은 failure1로 설정한다.
+```shell
+kubectl create deployment failure1 --image=multistage-img
+```
+
+3. `kubectl get pod -w` 파드의 상태 및 변화를 확인한다.
+```shell
+kubectl get pod -w
+```
+```shell
+NAME                        READY   STATUS         RESTARTS   AGE
+failure1-6dc55db9d4-fqkjt   0/1     ErrImagePull   0          43s
+failure1-6dc55db9d4-fqkjt   0/1     ImagePullBackOff   0          45s
+```
+상태가 정상이라면 STATUS에 Running으로 표시돼야 한다. 하지만 이미지를 내려 받는데 문제가 발생해 ErrImagePull, ImagePullBackOff으로 표시된다.
+이는 이미지가 호스트에 존재함에도 기본 설정에 따라 이미지를 외부(도커 허브)에서 받으려고 시도하기 때문이다.
+
+4. 이번에는 내부에 존재하는 컨테이너 이미지를 사용하도록 설정해 디플로이먼트를 생성한다. 사용자가 원하는 형태의 디플로이먼트를 만드는 가장 좋은 방법은 현재 수행되는 구문을 yaml 형태로 뽑아내는 것이다.
+`--dry-run=client` 옵션은 해당 내용을 실제로 적용하지 않은 채 명령을 수행하고, `-o yaml`은 현재 수행되는 명령을 yaml 형태로 바꾼다.
+두 옵션을 조합하면 현재 수행되는 명령을 yaml 형태로 출력해 사용자가 원하는 형태로 변경할 수 있다. `> failure2.yaml`을 붙여 실행 결과를 파일로 저장한다.
+```shell
+kubectl create deployment failure2 --dry-run=client -o yaml --image=multstage-img > failure2.yaml
+```
+5. failure2.yaml을 열어 컨테이너 설정에 imagePullPolicy: Never 옵션을 다음과 같이 추가한다. 
+이 옵션은 외부에서 이미지를 가져오지 않고 호스트에 존재하는 이미지를 사용하게 한다.
+```shell
+vi failure2.yaml
+```
+```shell
+spec:
+  containers:
+    - image: mulistage-img
+      imagePullPolicy: Never
+      name: multistage-img
+      resource: {}
+status: {}
+```
+
+6. 수정한 failure2.yaml 파일을 디플로이먼트에 적용하고 상태를 확인한다.
+```shell
+kubectl apply -f failure2.yaml
+kubectl get pods
+```
+```shell
+NAME                        READY   STATUS              RESTARTS   AGE
+failure1-6dc55db9d4-fqkjt   0/1     ImagePullBackOff    0          10m
+failure2-7dddbbfbd4-x6c6q   0/1     ErrImageNeverPull   0          2s
+```
+여전히 오류가 발생한다. 내부의 이미지를 사용하도록 옵션을 추가했는데 왜 이미지를 가져오지 못할까?
+
+7. 오류가 발생하는 디플로이먼트를 삭제하고 정확히 실습해보자.
+```shell
+kubectl delete deployment failure1
+```
+
+8. w-k8s에 접속한다.
+
+9. 저자가 깃허브에 올려 둔 Dockerfile을 받아 와 테스트를 위한 컨테이너 이미지를 만든다.
+```shell
+curl -O https://raw.githubusercontent.com/sysnet4admin/_Book_k8sInfra/main/ch4/4.3.4/Dockerfile
+```
+
+10. docker build로 컨테이너 이미지 multistage-img를 워커 노드 3번에 빌드하고 결과가 성공적으로 이루어졌는지 확인한다.
+```shell
+docker build -t multistage-img .
+```
+
+11. 마스터 노드로 돌아와 failure2.yaml을 success1.yaml로 복사한다.
+```shell
+cp failure2.yaml success1.yaml
+```
+
+12. sed 명령어로 success1.yaml 파일에 replicas를 1에서 3으로 변경하고 failure2 이름도 success1로 변경한다.
+```shell
+sed -i 's/replicas: *1/replicas: 3/' success1.yaml
+sed -i 's/failure2/success1/' success1.yaml
+```
+13. 배포에 앞서 w3-k8s의 이미지 빌드가 완료됐는지 확인한다. 이미지 빌드가 완료됐다면 kubectl apply로 succes1.yaml을 실행시키고, kubectl get pods -o wide 명령으로 배포에 성공한 노드가 워커 노드 3번인지 확인한다.
+```shell
+kubectl apply -f success1.yaml
+kubectl get pods -o wide
+```
+```shell
+NAME                        READY   STATUS              RESTARTS   AGE   IP               NODE     NOMINATED NODE   READINESS GATES
+success1-6fc588fdf4-c2m2d   0/1     ErrImageNeverPull   0          2s    172.16.103.135   w2-k8s   <none>           <none>
+success1-6fc588fdf4-mvvnf   1/1     Running             0          2s    172.16.132.7     w3-k8s   <none>           <none>
+success1-6fc588fdf4-wfj96   0/1     ErrImageNeverPull   0          2s    172.16.221.136   w1-k8s   <none>           <none>
+```
+워커 노드 3번만 배포에 성공했다. 컨테이너 이미지가 워커 노드 3번에만 있기 때문이다.
+이 부분을 어떻게 해결해야 할까? 해결 방법은 크게 두 가지가 있다.
+기본으로 사용하는 도커 허브에 multistage-img를 올려서 다시 내려 받거나, 쿠버네티스 클러스터가 접근할 수 있는 곳에 이미지 레지스트리를 만들고 그 곳에서 받아오도록 설정하는 것이다.
+도커 허브에 올려서 해결하는 것은 너무 쉬우니 좀더 어려운 방법을 알아보자.
+
+14. 다음 실습을 위해 Deployment를 삭제한다.
+```shell
+kubectl delete -f success1.yaml
+```
+
+15. 테스트를 위해 워커 노드 3번에 생성했던 컨테이너 이미지와 댕글링 이미지도 삭제한다.
+```shell
+docker rmi multistage-img
+docker rmi $(docker images -f dangling=true -q)
+```
+
+### 4.4.2 레지스트리 구성하기
+호스트에서 생성한 이미지를 쿠버네티스에서 사용하려면 모든 노드에서 공통으로 접근하는 레지스트리(저장소)가 필요하다.
+도커나 쿠버네티스는 도커 허브라는 레지스트리에서 이미지를 내려 받을 수 있다. 인터넷이 연결돼 있다면 이곳을 이용하면 된다.
+
+때로는 직접 만든 이미지가 외부에 공개되기를 원하지 않는 경우도 있다. 도커 허브에서 제공하는 사설 저장소(private repository)가 있지만,
+사설 저장소는 무료 사용자에게는 1개 밖에 허용돼지 않으며 비공개 저장소를 사용하려면 유료 구독을 해야 한다.
+또한 무료 사용자는 이미지를 내려받는 횟수에 제약이 있다.
+
+제약 없이 사용할 수 있는 저장소가 필요하다면 레지스트리를 직접 구축하면 된다. 이 경우에는 인터넷을 연결할 필요가 없으므로 보안이 중요한 내부 전산망에서도 구현이 가능하다.
+여기서는 도커에서 제공하는 도커 레지스트리 이미지를 사용해 사설 도커 레지스트리를 만들겠다.
+도커 레지스트리는 기능은 부족하지만, 컨테이너를 하나만 구동하면 돼서 설치가 간편하고 내부에서 테스트 목적으로 사용하기에 적합하다.
+
+1. 사설 이미지 레지스트리 구성을 위한 파일들을 확인한다.
+```shell
+ls ~/_Book_k8sInfra/ch4/4.4.2
+```
+```shell
+create-registry.sh  remover.sh  tls.csr
+```
+디렉터리에는 인증서를 만들어 배포한 뒤 레지스트리를 구동하는 `create-registry.sh` 파일과 인증서를 만들 때 사용하는 `tls.csr` 파일이 있다.
+인증서를 생성하려면 서명 요청서(CSR, Certificate signing request)를 작성해야 한다. 
+서명 요청서에는 인증서를 생성하는 개인이나 기관의 정보와 인증서를 생성하는데 필요한 몇 가지 추가 정보를 기록한다.
+이후 CSR을 기반으로 인증서와 개인키를 생성하는데, 이 예제에서 사용하는 CSR이 `tls.csr` 파일이다.
+`remover.sh`는 인증 문제가 생겼을 때 모든 설정을 지우는 스크립트이다.
+
+웹 서버에서 사용하는 인증서를 생성할 때는 서명 요청서 정보 없이 명령줄에서 직접 인증서를 생성한다. 하지만 도커는 이미지를 올리거나 내려받으려고 레지스트리에 접속하는 과정에서
+주체 대체 이름(SAN, Subject Alternative Name)이라는 추가 정보를 검증하기 때문에 요청서에 추가 정보를 기입해 인증서를 생성하는 과정이 필요하다.
+tls.csr 파일을 살펴 보자.
+
+```shell
+[req]
+distinguished_name = private_registry_cert_req
+x509_extensions = v3_req
+prompt = no
+
+[private_registry_cert_req]
+C = KR
+ST = SEOUL
+L = SEOUL
+O = gitbut
+OU = Book_k8sInfra
+CN = 192.168.1.10
+
+[v3_req]
+keyUsage = keyEncipherment, dataEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.0 = m-k8s
+IP.0 = 192.168.1.10
+```
+* 2번 라인: 6번째 줄의 [private_registry_cert_req] 아래의 7~12번째 줄의 정보를 이용해 인증서를 생성한다.
+* 3번 라인: 15~17번째 줄의 정보를 추가 정보로 이용한다.
+* 6~12번 라인: 인증서 요청자의 국가, 도시, 소속, 이름, 인증서를 설치하는 서버의 주소 등의 정보이다.
+* 14~17번 라인: 키의 사용 목적을 기입하고, 19번 라인의 20~21번 라인 정보를 주체 대체 이름으로 사용한다.
+* 19~20번 라인: 도메인 이름과 사이트가 일치하는지를 확인할 때 사용하는 추가적인 정보이다.
+이 부분이 없으면 도커에서 인증서 검증이 실패해 사설 도커 레지스트리를 정상적으로 사용할 수 없다.
+
+create-registry.sh는 실제로 레지스트리를 생성하고 구동하는 과정이 담긴 스크립트다.
+이 스크립트는 인증서 생성과 배포, 레지스트리 생성과 구동의 순서로 이루어져 있다.
+
+```shell
+#!/usr/bin/env bash
+certs=/etc/docker/certs.d/192.168.1.10:8443
+mkdir /registry-image
+mkdir /etc/docker/certs
+mkdir -p $certs
+openssl req -x509 -config $(dirname "$0")/tls.csr -nodes -newkey rsa:4096 -keyout tls.key -out tls.crt -days 365 -extensions v3_req
+
+yum install sshpass -y
+for i in {1..3}
+  do 
+    sshpass -p vagrant ssh -o StrictHostKeyChecking=no root@192.168.1.10$i mkdir -p $certs
+    sshpass -p vagrant scp tls.crt 192.168.1.10$i:certs
+  done
+  
+cp tls.crt $certs
+mv tls.* /etc/docker/certs
+
+docker run -d \
+ --restart always \
+ --name registry \ 
+  -v /etc/docker/certs:/docker-in-certs:ro \
+  -v /registry-image:/var/lib/registry \
+  -e REGISTRY_HTTP_ADDR=0.0.0.0:443 \
+  -e REGISTRY_HTTP_TLS_CERTIFICATE=/docker-in-certs/tls.crt \
+  -e REGISTRY_HTTP_TLS_KEY=/docker-in-certs/tls.key \
+  -p 8443:443 \
+  registry: 2
+```
+* 2번 라인: `/etc/docker/certs.d/192.168.1.10:8443`을 `certs`라는 변수에 설정한다.
+도커는 `/etc/docker/certs.d` 디렉터리 하위 경로에서 레지스트리 주소와 일치하는 디렉터리에 위치한 인증서를 찾아 레지스트리에 HTTPS 접속을 한다.
+따라서 마스터 노드와 워커 노드에 인증서 디렉터리를 생성할 때 변수 certs를 인증서 디렉터리 경로로 사용한다.
+* 3번 라인: `/registry-image/` 디렉터리를 생성한다. 22번 라인에 컨테이너 내부의 경로에 연결돼 레지스트리 이미지가 저장된다.
+* 4번 라인: `/etc/docker/certs/` 디렉터리를 생성한다. 이 디렉터리는 레지스트리 서버의 인증서들을 보관한다. 24~25번 라인에 레지스트리 컨테이너 내부에 연결돼 인증서를 컨테이너에서도 사용할 수 있게 한다.
+* 5번 라인: 변수 certs 에 입력된 경로를 이용해 인증서를 보관할 디렉터리를 생성한다.
+* 6번~7번 라인: HTTPS로 접속을 하려면 서버의 정보가 담긴 인증서와 주고 받는 데이터를 암호화와 복호화할 때 사용하는 키가 필요하다.
+인증서를 새로 생성하는 요청서가 담긴 tls.csr 파일로 HTTPS 인증서인 tls.crt 파일과 암호화와 복호화에 사용하는 키인 tls.key 파일을 생성한다.
+이 중에서 `$(dirname "$0")`는 현재 셸 파일이 실행되는 경로인 ~/_Book_k8sInfra/ch4/4.4.2/를 치환해준다.
+* 9번 라인: ssh 접속을 위한 비밀번호를 자동으로 입력하는 sshpass를 설치한다. 별도의 설정이 없다면 ssh 접속 시 비밀번호를 사용자가 키보드로 직접 입력해야 한다. 그러나 사용자가 직접 비밀번호를 입력하면 자동화에 제약이 생긴다.
+* 10번 라인: 1~3의 숫자를 반복해 변수 i에 설정하고 10~13번 라인을 반복한다.
+변수 i로 워커 노드의 192.168.1.10{i}에 대한 인증서 디렉터리를 생성하고 인증서를 복사하는 작업을 반복한다.
+* 12번 라인: 워커 노드에 인증서 디렉터리를 생성한다. sshpass를 이용해 비밀번호를 키보드로 입력하지 않고 vagrant를 ssh 접속 비밀번호로 전달한다. ssh 명령어로 StrictHostKeyChecking=no 옵션을 전달해 ssh로 접속할 때 키를 확인하는 절차를 생략하고 바로 명령을 전달할 수 있게 한다.
+9번 라인에서 i에 설정된 숫자를 워커 노드 IP주소의 끝자리로 전달한다.
+* 13번 라인: 레지스트리 서버의 인증서 파일을 워커 노드로 복사한다. 9번 라인에서 변수 i에 설정된 워커 노드의 IP주소의 끝자리로 전달한다.
+* 16~17번 라인: 6~7번 라인에서 생성한 레지스트리 서버의 인증서 파일인 tls.crt와 암호화와 복호화에 사용하는 키인 tls.key중에 tls.crt를 `/etc/docker/certs.d/192.168.1.10:8443` 디렉터리로 복사하고
+tls.crt와 tls.key를 `/etc/docker/certs/` 디렉터리로 옮긴다.
+인증서 관련 파일들을 사용해 레지스트리 컨테이너에 들어오는 요청을 인증하고, 인증서가 설치된 호스트에서만 레지스트리에 접근할 수 있게 한다.
+* 19~21번 라인: 컨테이너를 백그라운드에서 데몬으로 실행하고 (-d), 정지되면 자동으로 재시작하며 (--restart=always), 생성하는 컨테이너의 이름은 registry(--name registry)로 정한다.
+* 22번 라인: 사설 인증서와 관련된 파일들이 위치한 `/etc/docker/certs/` 디렉터리를 컨테이너 내부에서 사용할 수 있도록 -v 옵션으로 컨테이너 내부의 docker-in-certs 디렉터리와 연결한다.
+인증서 정보는 외부에서 임의 변경할 수 없더록 안전하게 보관해야 하므로 ro(ReadOnly) 옵션으로 읽기 전용을 설정한다.
+* 23번 라인: 레지스트리에 컨테이너 이미지가 계속 저장될 수 있도록 호스트에 저장 공간으로 설정한 registry-image 디렉터리를 컨테이너 내부의 /var/lib/registry/ 디렉터리와 연결한다.
+사설 도커 레지스트리는 사용자가 push한 데이터를 내부의 /var/lib/registry/ 디렉터리에 기본으로 저장한다. 별도의 외부 디렉터리에 데이터를 저장하지 않는다면 컨테이너가 새로 구동될 때마다 데이터가 삭제된다.
+* 24번 라인: 레지스트리가 요청을 받아들이는 포트로 443번 포트를 설정한다. 443포트는 HTTPS로 접속할 때 사용하는 기본 포트이다.
+* 25번 라인: 레지스트리가 사용할 HTTPS 인증서의 경로를 설정한다. 21번 라인에서 연결한 경로 내부에 있는 tls.crt 파일을 HTTPS 인증서로 사용한다.
+* 27번 라인: -p 옵션으로 호스트 컴퓨터의 8443번 포트와 컨테이너 내부의 443번 포트로 연결한다. 외부에서 호스트 컴퓨터의 8443번 포트로 요청을 보내면 이 요청은 사설 도커 레지스트리 내부의 443 포트로 전달된다.
+* 28번 라인: 도커 허브에 있는 registry 이미지로 레지스트리 컨테이너를 생성한다. 이때 태그 2를 넣어서 레지스트리 2.* 버전 이미지를 사용한다는 것을 명시한다.
+나중에 설치를 확인하는 과정에서 버전 2를 의미하는 v2가 경로에 포함된다.
+
+2. create-registry.sh를 실행해 레지스트리를 구성한다. 이 명령으로 인증서 생성 및 배포 작업과 함께 레지스트리를 구동한다.
+직접 생성하고 자체적으로 검증하는 인증서를 자체 서명 인증서라고 한다.
+```shell
+~/_Book_k8sInfra/ch4/4.4.2/create-registry.sh
+```
+
+3. registry 컨테이너가 정상적으로 구동되는지 docker ps로 확인한다. PORTS 열을 보면 호스트의 8443번 포트로 들어온 요청을 컨테이너 내부의 443번 포트로 전달한다.
+```shell
+CONTAINER ID        IMAGE               COMMAND                  CREATED             STATUS              PORTS                             NAMES
+9b35c0e330ae        registry:2          "/entrypoint.sh /etc…"   56 seconds ago      Up 54 seconds       5000/tcp, 0.0.0.0:8443->443/tcp   registry
+```
+4. 사설 도커 레지스트리에 등록할 수 있게 컨테이너 이미지의 이름을 변경하자. multistage:latest 이미지를 레지스트리에서 읽으려면 레지스트리가 서비스되는 주소(IP와 도메인)와 제공되는 이미지 이름을 레지스트리에 등록될 이름으로 지정해야 한다.
+그래야만 해당 정보를 읽어 정상적으로 레지스트리에 등록시킨다. 따라서 docker tag 명령으로 192.168.1.10:8443/multistage-img 라는 multistage-img의 사본을 만든다.
+이미지를 따로 만드는 것이 아니라 레이어를 공유하는 사본이 만들어진다. 따라서 원본인 multistage-img가 삭제 돼도 192.168.1.10:8443/multistage-img가 작동하는데 문제가 없다.
+두 이미지는 같은 레이어를 바라보는 이름만 다른 존재이기 때문이다.
+```shell
+docker tag multistage-img 192.168.1.10:8443/multistage-img
+```
+
+5. 이미지가 정상적으로 생성됐는지 docker images 192.168.1.10:8443/multistage-img로 확인한다.
+```shell
+docker images 192.168.1.10:8443/multistage-img
+```
+```shell
+REPOSITORY                         TAG                 IMAGE ID            CREATED             SIZE
+192.168.1.10:8443/multistage-img   latest              f3e2d2fae82b        16 hours ago        148MB
+```
+
+6. docker push 192.168.1.10:8443/multistage-img로 사설 도커 레지스트리에 이미지를 등록한다.
+```shell
+docker push 192.168.1.10:8443/multistage-img
+```
+```shell
+The push refers to repository [192.168.1.10:8443/multistage-img]
+12385be81a78: Pushed 
+1d834f05c29e: Pushed 
+b29380a5a354: Pushed 
+231bdbae9aea: Pushed 
+ba16d454860a: Pushed 
+1a5ede0c966b: Pushed 
+latest: digest: sha256:c9c95e0462e575f7b0412fb730f1b4e0e60a7f947f1c2abbed8e1c26dec7275b size: 1583
+```
+
+7. 이미지가 정상적으로 등록됐는지 확인한다. 사설 도커 레지스트리에 `curl <레지스트리 주소> /v2/_catalog` 요청을 보내면 레지스트리에 등록된 이미지의 목록을 보여준다.
+자체 서명 인증서를 쓰는 사이트이기 때문에 `-k`(--insecure) 옵션으로 보안 검증을 생략하고 접속해야 한다.
+```shell
+curl https://192.168.1.10:8443/v2/_catalog -k
+```
+```shell
+{"repositories":["multistage-img"]}
+```
+8. 호스트에서 생성한 이미지는 더 이상 사용하지 않으니 삭제한다. 이미지를 삭제하려면 이미지의 ID를 docker images | grep multi 명령으로 알아낸다.
+이때 이미지 ID가 동일한 것을 확인할 수 있다. 즉 2개는 완전히 동일한 이미지이다.
+```shell
+docker images | grep multi
+```
+```shell
+192.168.1.10:8443/multistage-img     latest              f3e2d2fae82b        16 hours ago        148MB
+multistage-img                       latest              f3e2d2fae82b        16 hours ago        148MB
+```
+
+9. docker rmi -f로 이미지를 삭제한다. -f를 사용한 이유는 같은 ID를 바라보고 있는 2개의 이미지를 한 번에 삭제하기 위함이다.
+단순히 이미지 ID로 삭제하려고 하면 이미지가 여러 이름으로 사용되고 있다는 오류가 발생하면서 실행되지 않는다.
+```shell
+docker rmi f3e2d2fae82b -f 
+```
+```shell
+Untagged: 192.168.1.10:8443/multistage-img:latest
+Untagged: 192.168.1.10:8443/multistage-img@sha256:c9c95e0462e575f7b0412fb730f1b4e0e60a7f947f1c2abbed8e1c26dec7275b
+Untagged: multistage-img:latest
+Deleted: sha256:f3e2d2fae82b77af374d27389e255cacff20620ef537cb37029d9e435602c080
+Deleted: sha256:7a46dbe9e150580cabb35e9da7dd58e76240a60b1ffff0e5792b4e5bf3981451
+Deleted: sha256:9dafe49d4cb207d237fd80947342c2790af71630d2552a599fde507974ab2962
+Deleted: sha256:36c6dbe3c4f2930d89d5ff902a4f93fc47d6960bb2260c550747f16cd33bb8a3
+Deleted: sha256:5c84998cb00842984e4d59feb4f2750fd24cab0fa602dba3def5076188c8d8f2
+Deleted: sha256:2711e8a2228287466551a39745d49bc6dcf254fcf94972cb565bf4bf0204f7d4
+```
+
+10. 이미지가 정상적으로 삭제됐는지 docker images | grep multi로 다시 한 번더 확인한다.
+```shell
+docker images | grep multi
+```
+
 ---
 # 5. 지속적 통합과 배포 자동화, 젠킨스
 
