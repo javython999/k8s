@@ -2967,9 +2967,326 @@ Deleted: sha256:2711e8a2228287466551a39745d49bc6dcf254fcf94972cb565bf4bf0204f7d4
 ```shell
 docker images | grep multi
 ```
+### 4.4.3 직접 만든 이미지로 컨테이너 구동하기
+쿠버네티스 클러스터에 속해 있는 노드 어디에서든지 이미지를 내려받을 수 있는 레지스트리를 구성했다. 쿠버네티스에서 파드를 생성할 때 직접 구성한 레지스트리에서 가지고 오는 방법을 확인해 보자.
 
+1. 4.4.1에서 success1.yaml을 복사해 success2.yaml을 생성한다.
+```shell
+copy success1.yaml success2.yaml
+```
+
+2. success2.yaml을 열고 21번 라인을 192.168.1.10:8443/multistage-img로 수정한다.
+```shell
+vi success2.yaml
+```
+```shell
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  labels:
+    app: success1
+  name: success1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: success1
+  strategy: {}
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: success1
+    spec:
+      containers:
+      - image: 192.168.1.10:8443/multistage-img
+        name: multistage-img
+        resources: {}
+status: {}
+```
+3. 워커 노드 3번에 배포한 이미지와 중복되지 않게 success2.yaml에 설정된 이름인 success1을 모두 success2로 변경한다.
+```shell
+sed -i 's/success1/success2/' success2.yaml
+```
+
+4. success2.yaml로 deployment를 생성한다.
+```shell
+kubectl create -f success2.yaml
+```
+5. 생성된 디플로이먼트가 정상적으로 작동하는지 확인한다.
+```shell
+kubectl get pods -o wide
+```
+```shell
+NAME                        READY   STATUS    RESTARTS   AGE   IP               NODE     NOMINATED NODE   READINESS GATES
+success2-6575dfbf95-kxccd   1/1     Running   0          10s   172.16.132.12    w3-k8s   <none>           <none>
+success2-6575dfbf95-rzv4z   1/1     Running   0          10s   172.16.221.141   w1-k8s   <none>           <none>
+success2-6575dfbf95-tt6xn   1/1     Running   0          10s   172.16.103.143   w2-k8s   <none>           <none>
+```
+
+6. 배포된 파드가 요청에 정상적으로 응답하는지 curl로 확인한다.
+```shell
+curl 172.16.132.12
+curl 172.16.221.141
+curl 172.16.103.143
+```
+```shell
+src: 172.16.171.64 / dest: 172.16.132.12
+src: 172.16.171.64 / dest: 172.16.221.141
+src: 172.16.171.64 / dest: 172.16.103.143
+```
+7. 직접 구성한 레지스트리에 올린 이미지로 디플로이먼트가 배포됨을 확인했다. 다음 실습을 위해 디플로이먼트를 삭제한다.
+```shell
+kubectl delete -f success2.yaml
+```
 ---
 # 5. 지속적 통합과 배포 자동화, 젠킨스
+컨테이너로 구동하는 애플리케이션을 어떻게 배포하는 것이 가장 좋을까?
+4장에서 진행한 과정을 정리하면 다음과 같다.
+
+1. 깃허브 등의 저장소에 저장해둔 애플리케이션 소스 코드를 내려받아 도커 컨테이너 이미지로 빌드한다.
+2. 빌드한 컨테이너 임지리를 쿠버네티스에서 사용할 수 있도록 레지스트리에 등록한다.
+3. 레지스트리에 등록된 이미지를 기반으로 쿠버네티스 오브젝트를 생성한다.
+4. 생성한 오브젝트(파드/디플로이먼트)를 외부에서 접속할 수 있도록 서비스 형태로 노출한다.
+
+이런 과정을 파이프라인(Pipeline)이라고 한다. 기존에는 파이프라인을 사람이 하나하나 수작업으로 진행했지만, 이제는 도구를 사용해 자동화를 할 수 있다.
+자동화는 크게 지속적 통합(CI, Continuous Integration), 지속적 배포(CD, Continuous Deployment) 두 가지로 정의되며,
+일반적으로 둘을 합쳐 CI/CD라고 한다.
+
+## 5.1 컨테이너 인프라 환경에서 CI/CD
+CI는 코드를 커밋하고 빌드했을 때 정상적으로 작동하는지 반복적으로 검증해 애플리케이션의 신뢰성을 높이는 작업이다.
+CI 과정을 마친 애플리케이션은 신뢰할 수 있는 상태가 된다.
+
+CD는 CI 과정에서 생성된 신뢰할 수 있는 애플리케이션을 실제 상용 환경에서 자동으로 배포하는 것을 의미한다.
+애플리케이션을 상용 환경에 배포할 때 고려해야 할 사항이 이려거 가지 있는데, 이를 CD에 미리 정의하면 실수를 줄이고, 실제 적용 시간도 최소화할 수 있다.
+
+### 5.1.1 CI/CD 도구 비교
+CI/CD를 제공하는 도구는 매우 많지만, 대표적인 CI/CD 도구를 비교해 왜 젠킨스를 선택하고 다루는지 알아보자.
+오픈소스 CI/CD 도구로, 젠킨스는 사용자가 직접 UI에서 작업을 구성하거나 작업 순서를 코드로 정의할 수 있다.
+역사, 인지도, 사용자 수에서 CI/CD 도구의 대명사라고 해도 무리가 없을 정도로 널리 알려져 있다.
+사용자가 많기 때문에 필요한 정보를 찾기 쉽고 활용 방법과 플러그인 개발 관련 커뮤니티 활동이 활발하다.
+젠킨스는 거의 모든 환경에 사용할 수 있도록 다양한 플러그인을 추가해 원하는 형태를 만드는 블록 방식으로 구성돼 있다.
+따라서 CI/CD 시작은 가장 대중적인 젠킨스로 하는 것이 좋다.
+
+### 5.1.2 젠킨스 설치를 위한 간편화 도구 살펴보기
+애플리케이션 배포 영역에 쿠버네티스를 사용하면 개발자는 애플리케이션 개발에만 집중할 수 있게 된다.
+기존에는 환경이 다른 곳에 빌드한 애플리케이션을 배포하게 되면 개발자가 개발 환경에 맞춰 애플리케이션 코드를 일일이 수정해야 했다.
+하지만 모든 배포 환경을 컨테이너 인프라로 일원화하고, CI/CD 도구를 사용하면 애플리케이션에 맞는 환경을 적용해 자동으로 배포할 수 있다.
+그리고 통합 과정에서 만들어진 컨테이너 이미지를 기반으로 쿠버네티스가 존재하는 어떤 환경에서도 일관성이 있는 애플리케이션을 배포할 수 있다.
+
+개발자가 작성한 애플리케이션 코드를 소스 코드 저장소에 푸시하면, 
+쿠버네티스 내부에 설치된 젠킨스는 애플리케이션 코드를 빌드하고, 
+레지스트리에 푸시한 후에 쿠버네티스에서 사용 가능한 형태로 배포한다.
+
+젠킨스는 작업 내용을 아이템(Item) 단위로 정의하고 조건에 따라 자동으로 작업을 수행해 효율을 높이고 실수를 줄인다.
+컨테이너 인프라 환경에서 젠킨스를 사용하는 주된 이유는 애플리케이션을 컨테이너로 만들고 배포하는 과정을 자동화하기 위해서이다.
+하지만 자동화 환경은 단순히 젠킨스용 파드만을 배포해서 만들어지지 않는다.
+젠킨스는 컨트롤러와 에이전트 형태로 구성한 다음 배포해야 하며 여기에 필요한 설정을 모두 넣어야 한다.
+애플리케이션을 배포하기 위한 환경을 하나하나 구성하는 것은 매우 복잡하고 번거로운 일이며, 고정된 값이 아니기 때문에 
+매니페스트로 작성해 그대로 사용할 수가 없다. 구성 환경에 따라 많은 부분을 동적으로 변경해야 한다.
+동적인 변경 사항을 간편하고 빠르게 적용할 수 있도록 도와주는 도구가 있다.
+하나는 커스터마이즈(Kustomize)이고, 다른 하나는 헬름(Helm)이다.
+
+## 5.2 젠킨스를 설치하기 위한 간편화 도구 살펴보기
+
+### 5.2.1 배포 간편화 도구 비교하기
+그동안 사용한 kubectl은 사실 바이너리 실행 파일로 짜인 배포 도구이다.
+kubectl이 없으면 직접 코드를 짜서 API 서버에 명령을 내려야 한다.
+커스터마이즈와 헬름은 kubectl을 좀 더 확장해서 복잡한 오브젝트와 구성 환경을 자동으로 맞추는 도구이다.
+
+* kubectl(큐브시티엘): 쿠버네티스에 기본으로 포함된 커맨드라인 도구로, 추가 설치 없이 바로 사용할 수 있다.
+오브젝트 생성과 쿠버네티스 클러스터에 존재하는 오브젝트, 이벤트 등의 정보를 확인하는데 사용하는 활용도 높은 도구이다.
+또한 오브젝트의 명세가 정의된 야믈 파일을 인자로 입력받아 파일 내용에 따라 오브젝트를 배포할 수도 있다.
+kubectl은 정의된 매니페스트 파일을 그대로 배포하기 때문에 개별적인 오브젝트를 관리하거나 배포할 때 사용하는 것이 좋다.
+
+* kustomize(커스터마이즈): 오브젝트를 사용자의 의도에 따라 유동적으로 배포할 수 있다.
+별도의 커스터마이즈 실행 파일을 활용해 커스터마이즈 명세를 따르는 야믈 파일을 생성할 수 있다.
+야믈 파일이 이미 존재한다면 kubectl로도 배포할 수 있는 옵션이 있을 정도로 kubectl과 매우 밀접하게 동작한다.
+커스터마이즈는 명세와 관련된 야믈 파일에 변수나 템플릿을 사용하지는 않지만, 
+명령어로 배포 대상 오브젝트의 이미지 태그와 레이블 같은 명세를 변경하거나 일반 파일을 이용해 컨피그맵과 시클릿을 생성하는 기능을 지원한다.
+그래서 운영 중인 환경에서 배포 시 가변적인 요소를 적용하는데 적합하다.
+
+* 헬름(Helm): 헬름은 쿠버네티스 사용자의 70% 이상이 사용하고 있을 정도로 널리 알려진 도구로, 
+오브젝트 배포에 필요한 사양이 이미 정의된 차트라는 패키지를 활용한다.
+앞선 두 가지 도구와 달리 헬름 차트 저장소가 온라인에 있기 때문에 패키지를 검색하고 내려받아 사용하기가 매우 간편하다.
+헬름 차트는 자체적인 템플릿 문법을 사용하므로 가변적인 인자를 배포할 때 적용해 다양한 배포 환경에 맞추거나 원하는 조건을 적용할 수 있다.
+헬름은 오브젝트를 묶어 패키지 단위로 관리하므로 단순한 1개의 명령어로 애플리케이션에 필요한 오브젝트들을 구성할 수 있다.
+
+### 5.2.2 커스터마이즈로 배포 간편화하기
+> 커스터마이즈의 작동 원리
+
+커스터마이즈는 야믈 파일에 정의된 값을 사용자가 원하는 값으로 변경할 수 있다.
+쿠버네티스에서 오브젝트에 대한 수정 사항을 반영하려면 사용자가 직접 야믈 파일을 편집기로 수정해야 한다.
+일반적으로 이런 방식으로 수정했을 때 큰 문제가 발생하지 않는다.
+그런데 만약 수정해야하는 야믈 파일이 매우 많거나 하나의 야믈 파일로 환경이 다른 여러 개의 쿠버네티스 클러스터에 배포해야 해서
+LABEL이나 NAME 같은 일부 항목을 수정해야 한다면 매번 일일이 고치는 데 많은 노력이 든다.
+커스터마이즈는 이를 위해 `kustomize` 명령을 제공한다.
+`kustomize` 명령과 `create` 옵션으로 `kustomization.yaml`이라는 기본 매니페스트를 만들고, 
+이 파일에 변경해야하는 값들을 적용한다. 그리고 `build` 옵션으로 변경할 내용이 적용된 최종 야믈 파일을 저장하거나 변경된 내용이 바로 실행되도록 지정한다.
+
+그러면 이제 커스터마이즈로 MetalLB를 구성해보자.
+커스터마이즈를 사용해서 MetalLB를 만든다는 것은 사실상 명세서인 kustomization.yaml을 만드는 과정이다.
+그리고 만들어진 kustomization.yaml을 통해서 우리가 원하는 내용이 담긴 MetalLB 매니페스트를 생성하고,
+이 매니페스트를 통해서 배포하는 것이다. 즉 커스터마이즈는 단순히 최종 매니페스트 생성을 도와주는 도구인 것이다.
+
+1. 커스터마이즈 명령을 사용하기 위해 ~/_Book_k8sInfra/ch5/5.2.2/kustomize-install.sh를 실행해 커스터마이즈 압축 파일을 내려 받고 이를 해제하고
+/usr/local/bin을 옮기자.
+
+2. 커스터마이즈에 리소스 및 주소 할당 영역(Pool)을 구성할 때 사용할 파일드을 확인하기 위해서 ~/_Book_k8sInfra/ch5/5.2.2 디렉터리로 이동하고
+metallb-l2config.yaml, metallb.yaml, namespace.yaml이 있는 것을 확인한다.
+
+3. 커스터마이즈로 변경될 작업을 정의하기 위해 `kustomize create --namespace=metallb-system --resources namespace.yaml,metallb-l2config.yaml` 명령으로 kutomization.yaml을 생성하겠다.
+이때 --namespace는 작업의 네임스페이스를 설정하며, --resources 멸영은 커스터마이즈 명령을 이용해서 kustomization.yaml을 만들기 위핸 소스 파일을 정의한다.
+```shell
+kustomize create --namespace=metallb-system --resources namespace.yaml,metallb-l2config.yaml
+```
+4. 생성한 kustomziation.yaml 파일을 확인해 보면, 리소스로 namespace.yaml, metallb.yaml 그리고 metallb-l2config.yaml이 설정됐고, 
+네임스페이스는 metallb-system으로 설정된 것을 확인할 수 있다.
+```shell
+cat kustomization.yaml
+```
+```shell
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- namespace.yaml
+- metallb-l2config.yaml
+namespace: metallb-system
+```
+5. 설치된 이미지를 안정적인 버전으로 유지하기 위해서 `kustomize edit set image` 옵션을 이용해
+MetalLB controller와 speaker의 이미지 태그를 v0.8.2로 지정한다.
+```shell
+kustomize edit set image metallb/controller:v0.8.2
+kustomize edit set image metallb/speaker:v0.8.2
+```
+
+6. 커스터마이즈로 생성된 kustomization.yaml에 이미지 태그 정보(v0.8.2)가 설정됐는지 확인한다.
+```shell
+cat kustomization.yaml
+```
+```shell
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- namespace.yaml
+- metallb-l2config.yaml
+namespace: metallb-system
+images:
+- name: metallb/controller
+  newTag: v0.8.2
+- name: metallb/speaker
+  newTag: v0.8.2
+```
+7. 이제 `kustomize build` 명령을 MetalLB 설치를 위한 매니페스트를 생성해보면, 다음과 같이 metallb-l2config.yaml을 통해서 컨피그맵이 만들어졌으며
+이미지 태그인 v0.8.2가 적용된 것을 확인할 수 있다.
+```shell
+kustomize build
+```
+```shell
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- namespace.yaml
+- metallb-l2config.yaml
+namespace: metallb-system
+images:
+- name: metallb/controller
+  newTag: v0.8.2
+- name: metallb/speaker
+  newTag: v0.8.2
+[root@m-k8s 5.2.2]# kustomize build
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app: metallb
+  name: metallb-system
+---
+apiVersion: v1
+data:
+  config: |
+    address-pools:
+    - name: metallb-ip-range
+      protocol: layer2
+      addresses:
+      - 192.168.1.11-192.168.1.19
+kind: ConfigMap
+metadata:
+  name: config
+  namespace: metallb-system
+```
+8. 이를 파일로 저장해 MetalLB를 배포할 수도 있지만, 편의를 위해서 `kustomize build | kubectl apply -f -` 명령으로 빌드한 결과가 바로 kubectl apply에 인자로 전달돼 배포되도록 하겠다.
+```shell
+kustomize build | kubectl apply -f -
+```
+```shell
+namespace/metallb-system created
+serviceaccount/controller created
+serviceaccount/speaker created
+podsecuritypolicy.policy/speaker created
+role.rbac.authorization.k8s.io/config-watcher created
+clusterrole.rbac.authorization.k8s.io/metallb-system:controller created
+clusterrole.rbac.authorization.k8s.io/metallb-system:speaker created
+rolebinding.rbac.authorization.k8s.io/config-watcher created
+clusterrolebinding.rbac.authorization.k8s.io/metallb-system:controller created
+clusterrolebinding.rbac.authorization.k8s.io/metallb-system:speaker created
+configmap/config created
+deployment.apps/controller created
+daemonset.apps/speaker created
+```
+9. MetalLB가 정상적으로 배포됐는지 `kubectl get pods -n metallb-system` 명령과 `kubectl get configmaps -n metallb-system` 명령으로 확인한다.
+```shell
+kubectl get pods -n metallb-system
+kubectl get configmaps -n metallb-system
+```
+```shell
+NAME                          READY   STATUS    RESTARTS   AGE
+controller-5d48db7f99-948pf   1/1     Running   0          101s
+speaker-2jp7j                 1/1     Running   0          101s
+speaker-69hd4                 1/1     Running   0          101s
+speaker-9vswn                 1/1     Running   0          101s
+speaker-mwfrg                 1/1     Running   0          101s
+```
+```shell
+NAME     DATA   AGE
+config   1      111s
+```
+
+10. `kubectl describe pods -n metallb-system | grep Image:` 명령으로 커스터마이즈를 통해서 고정한 MetalLB의 태그가 v0.8.2인지 확인한다.
+```shell
+kubectl describe pods -n metallb-system | grep Image:
+```
+```shell
+    Image:         quay.io/metallb/controller:v0.8.2
+    Image:         quay.io/metallb/speaker:v0.8.2
+    Image:         quay.io/metallb/speaker:v0.8.2
+    Image:         quay.io/metallb/speaker:v0.8.2
+    Image:         quay.io/metallb/speaker:v0.8.2
+```
+11. 커스터마이즈를 통해서 MetalLB가 생성된 것을 확인했으니 간단하게 테스트해보자. 디플로이먼트 1개를 배포한 다음 LoadBalancer 타입으로 노출하고 IP가 정상적으로 할당됐는지 확인한다.
+```shell
+kubectl create deployment echo-ip --image=sysnet4admin/echo-ip
+kubectl expose deployment echo-ip --type=LoadBalancer --port=80
+```
+12. 호스트OS에서 브라우저로 192.168.1.11을 입력해 echo-ip가 정상적으로 응답하는지 확인한다.
+
+13. 다음 실습을 위해 MetalLB를 삭제하고 배포했던 echo-ip 관련 오브젝트를 삭제한다.
+```shell
+kustomize build | kubectl delete -f -
+kubectl delete service echo-ip
+kubectl delete deployment echo-ip
+```
+
+커스터마이즈를 이용하면 MetalLB의 다양한 설정을 사용자의 입맛에 맞게 변경하고 구현할 수 있다.
+그러나 커스터마이즈는 여러 가지 변경할 부분을 사용자가 직접 kustomization.yaml에 추가하고 최종적으로 필요한 매니페스트를 만들어 배포해야 한다.
+이러한 다소 수동적인 작성방식이 아닌 선언적으로 필요한 내용을 제공하고 이에 맞게 바로 배포하려면 어떻게 해야 할까?
+그리고 커스터마이즈를 통해 변경할 수 없었던 주소 할당 영역과 같은 값도 배포 시에 같이 변경하려면 어떻게 해야 할까?
+헬름은 이러한 제약 사항들을 업애고 편리성을 높일 수 있다.
+
+## 5.3 젠킨스 설치 및 설정하기
+## 5.4 젠킨스로 CI/CD 구현하기
+## 5.5 젠킨스 플러그인을 통해 구현되는 GitOps
 
 ---
 # 6. 안정적인 운영을 완성하는 모니터링, 프로메테우스와 그라파나
