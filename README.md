@@ -3284,7 +3284,175 @@ kubectl delete deployment echo-ip
 그리고 커스터마이즈를 통해 변경할 수 없었던 주소 할당 영역과 같은 값도 배포 시에 같이 변경하려면 어떻게 해야 할까?
 헬름은 이러한 제약 사항들을 업애고 편리성을 높일 수 있다.
 
+### 5.2.3 헬름으로 배포 간편화하기
+헬름을 통한 배포는 커스터마이즈에서 제한적이었던 주소 할당 영역과 같은 값을 대체하면서 간단하게 설치할 수 있도록 설계돼 있다.
+헬름의 작동 원리와 헬름에서 호출하는 차트를 살펴보자.
+
+> 헬름의 작동 원리
+
+헬림은 쿠버네티스에 패키지를 손쉽게 배포할 수 있도록 패키지를 관리하는 쿠버네티스 전용 패키지 매니저이다.
+일반적으로 패키지는 실행 파일뿐만 아니라 실행 환경에 필요한 의존성 파일과 환경 정보들의 묶음이다.
+패키지 매니저는 외부에 있는 저장소에서 패키지 정보를 받아와 패키지를 안정적으로 관리하는 도구이다.
+
+컨테이너 인프라 환경에서 애플리케이션을 배포하려면 ConfigMap, ServiceAccount, PV, PVC, Secret 등 애플리캐이션 배포 구성에 필요한 모든 쿠버네티스 오브젝트를 작성하고,
+kubectl 명령을 실행해서 쿠버네티스 클러스터에 설치해야 한다.
+이때 커스터마이즈를 사용하면 많은 부분을 환경에 맞춰 변경할 수 있지만, 주소 할당 영역과 같은 정보는 값의 형태가 아니라서
+변경할 수 없다. 이런 경우에 헬름을 사용하면 주소 할당 영역도 변경이 가능하다.
+이 외에도 헬름은 여러 장점이 있다.
+다수의 오브젝트 배포 야믈은 파일 구분자인 `---`로 묶어 단일 야믈로 작성해 배포할 수 있다.
+이런 경우 변경 사항을 추적할 때 모든 내용이 한 야믈 파일에 담겨 있기 때문에 여러 사람이 동시에 작업하면 충돌이 발생할 수 있다.
+문제를 해결하려면 목적에 맞게 디렉터리를 만들고 야믈 파일을 분리해 관리하면서 배포 시에는 디렉터리를 kubectl apply -f의 인자로 넘겨 줘야 한다.
+하지만 이런 방식을 사용하면 요구 조건에 변경되는 야믈 파일을 매번 개별 디렉터리에 작성해야 하고 디렉터리가 늘어날수록 관리 영역도 늘어나게 된다.
+
+헬름을 사용하면 요구 조건별로 리소스를 편집하거나 변수를 넘겨서 처리하는 패키지를 만들 수 있다.
+이렇게 다양한 요구 조건을 처리할 수 있는 패키지를 차트(chart)라고 하는데, 이를 헬름 저장소에 공개해 여러 사용자와 공유 한다.
+각 사용자는 공개된 저장소에 등록된 차트를 이용해 애플리케이션을 원하는 형태로 쿠버네티스에 배포할 수 있다.
+또한, 헬름은 배포한 애플리케이션을 업그레이드 하거나 되돌실 수 있는 기능과 삭제할 수 있는 기능을 제공한다.
+
+헬름의 작동 과정은 다음과 같다.
+* 생산자 영역: 생산자가 헬름 명령으로 작업 공간을 생성하면 templates 디렉터리로 애플리케이션 배포에 필요한 여러 야믈 파일과 구성을 작성할 수 있다.
+이때 templates 디렉터리에 조건별 분기, 값 전달 등을 처리할 수 있도록 values.yaml에 설정된 키를 사용한다.
+이때 값이 전달되지 않으면 기본값으로 처리하도록 values.yaml에 설정할 수 있다.
+이렇게 필요한 패키지의 여러 분기 처리나 배포에 대한 구성이 완료되면 생산자는 차의 이름, 목적, 배포되는 애플리케이션 버전 과 같은 패키지 정보를 Charts.yaml에 채워 넣는다.
+앞의 과정을 모두 거쳐 차트 구성이 완료되면 생산자가 저장소에 업로드 한다. 그리고 업로드한 생산자가 저장소를 아티팩트허브에 등록하면 사용자는 아티팩트 허브에서 생산자가 만든 저장소를 찾을 수 있다.
+
+* 아티팩트허브 영역: 아티팩트허브 검색을 통해 사용자가 찾고자 하는 애플리케이션 패키지를 검색하면 해당 패키지가 저장된 주소를 확인한다. 이렇게 확인한 주소는 각 애플리케이션을 개발하는 주체가 관리한다.
+헬름 버전2에서는 이러한 차트 저장소를 개인이 아닌 CNCF가 관리했으나 헬름 버전3가 배포되고 나서는 CNCF가 관리해야 하는 차트가 많아지면서 모든 차트 저장소는 개인 및 단체에서 직접 관리하도록 정책을 변경했다.
+
+* 사용자 영역: 사용자는 설치하려는 애플리케이션의 차트 저장소 주소를 아티팩트허브에서 얻으면 헬름을 통해서 주소를 등록한다. 그리고 이를 최신으로 업데이트한 이후에 차트를 내려받고 설치한다.
+이렇게 헬름을 통해 쿠버네티스에 설치된 애플리케이션 패키지를 릴리스라고 한다. 헬름을 통해 배포된 릴리스를 다시 차트를 사용해 업그레이드 할 수 도있고 원래대로 되돌릴 수 있다.
+또한 사용하지않는 헬름 릴리스를 제거할 수도 있다.
+
+헬름으로 MetalLB 한 번에 만들기
+1. 헬름 명령을 사용하기 위해서 ~/_Book_k8sInfra/ch5/5.2.3/helm-install.sh를 실행해 헬름을 설치하자.
+```shell
+export DESIRED_VERSION=v3.2.1; ~/_Book_k8sInfra/ch5/5.2.3/helm-install.sh
+```
+helm-install.sh를 실행하면 항상 최신 버전의 헬름을 내려 받기 때문에 호환성 이슈를 방지하기 위해 DESIRED_VERSION 환경 변수를 설정해 헬름 버전 v3.2.1로 고정해 설치하겠다.
+헬름 실행 파일도 /usr/local/bin에 위치한다.
+
+2. MetalLB를 설치하려면 헬름 차트를 등록할 주소를 알아야 한다. 아티팩트허브(https://artifacthub.io)에서 metallb를 검색해 주소를 확인한다.
+
+3. metallb의 상세 페이지에서는 차트 저장소(helm-charts) 등록법 외에도 차트에 대한 다양한 정보도 함께 제공한다.
+상세 페이지를 통해서 추가해야 하는 차트 주소 및 등록하는 방법도 함께 확인할 수 있다.
+
+4. 헬름 차트 저장소의 주소도 확인했으니 실제 저장소를 helm repo add 명령으로 등록해서 MetalLB를 설치할 준비를 하자.
+여기서 혼동이 올 수 있는 부분이 있다.
+헬름 차트 저장소인 `https://iac-source.github.io/helm-charts` 는 저자가 만든 저장소로, 아티팩트허브에 이 경로만을 표시한다는 점을 다시 한 번 기억해주기 바란다.
+그리고 edu는 헬름 차트 저장소를 대표하는 이름의 역할을 하는 것으로 자유롭게 변경 등록이 가능하지만, 이 책에서는 edu를 기반으로 작성됐기 때문에 edu를 사용하기 바란다.
+```shell
+helm repo add edu https://iac-source.github.io/helm-charts
+```
+```shell
+"edu" has been added to your repositories
+```
+
+5. 헬름 차트 저장소가 정상적으로 등록됐는지 helm list 명령으로 저장소 목록을 확인하겠다.
+```shell
+helm repo list
+```
+```shell
+NAME    URL                                     
+edu     https://iac-source.github.io/helm-charts
+```
+확인한 결과 edu라는 이름의 차트 저장소가 등록된 것을 확인할 수 있다.
+
+6. 헬름으로 차트 저장소를 추가한 시점의 차트를 로컬 캐시에 저장해 install과 같은 작업 수행시에 먼저 로컬에 있는 캐시 차트 정보를 참조한다.
+만약 저장소 추가 이후에 변경된 차트가 있다면 변경된 정보를 캐시에 업데이트할 수 있도록 helm repo update 명령을 통해 최신 차트정보를 동기화 한다.
+이는 관습적으로 이루어지는 것으로 현재의 랩에서는 필요한 요소는 아니지만 이렇게 진행하는 것이 나중에 일어날 수 있는 문제를 방지할 수 있다.
+```shell
+helm repo update
+```
+```shell
+Hang tight while we grab the latest from your chart repositories...
+...Successfully got an update from the "edu" chart repository
+Update Complete. ⎈ Happy Helming!⎈ 
+```
+7. 앞서 등록 및 업데이트한 저장소 edu로부터 MetalLB를 설치하겠다. 헬름 차트를 설치할 때 사용하는 명령어는 `helm install`이며 커스터마이즈와 다르게 인자를 바로 명령줄에서 받아서 처리한다.
+현재 사용하는 인자는 다음과 같다. 
+* `--namespace`: 헬름 차트를 통해서 생성되는 애플리케이션이 위치할 네임스페이스를 지정한다.
+* `--create-namespace`: 네임스페이스 옵션으로 지정된 네임스페이스가 존재하지 않는 경우 네임스페이스를 생성한다.
+* `--set`: 헬름에서 사용할 변수를 명령 인자로 전달한다. `key1=value1, key2=value2`와 같이 `,`를 사용해 한 줄에서 여러 인자를 넘겨 줄 수 있으나 가독성을 높이기 위해 `,`로 여러 인자를 넘겨 사용하지 않았다.
+
+일반적으로 배포 이후에 간략한 메세지와 함께 제작자가 작성한 사용 설명서가 함께 출력된다.
+이를 통해서 배포가 완료됐음을 확인할 수 있다.
+이후 실습에서 설치하는 헬름 차트는 지금 배포한 MetalLB보다 더 많은 인자를 입력 받기 때문에 이후 실습에서는 편의를 위해서 사전에 구성된 스크립트를 통해 차트를 설치하겠다.
+```shell
+`helm install metallb edu/metallb \
+--namespace=metallb-system \
+--create-namespace \
+--set controller.tag=v0.3.3 \
+--set speaker.tag=v0.8.3 \
+--set configmap.ipRange=192.168.1.11-192.168.1.29`
+```
+```shell
+NAME: metallb
+LAST DEPLOYED: Mon Dec 30 21:25:40 2024
+NAMESPACE: metallb-system
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+MetalLB load-balancer is successfully installed.
+1. IP Address range 192.168.1.11-192.168.1.29 is available.
+2. You can create a LoadBalancer service with following command below.
+kubectl expose deployment [deployment-name] --type=LoadBalancer --name=[LoadBalancer-name] --port=[external port]
+```
+8. 설치된 MetalLB가 정상적인 상태인지 배포 상태를 확인한다.
+```shell
+kubectl get pods -n metallb-system
+kubectl get configmap -n metallb-system
+```
+```shell
+NAME                          READY   STATUS             RESTARTS   AGE
+controller-5f84f746cc-f5snt   0/1     ImagePullBackOff   0          104s
+speaker-87h2g                 1/1     Running            0          104s
+speaker-j8mrk                 1/1     Running            0          104s
+speaker-nf4xk                 1/1     Running            0          104s
+speaker-ppq2s                 1/1     Running            0          104s
+```
+```shell
+NAME     DATA   AGE
+config   1      2m13s
+```
+9. kubectl describe pods -n metallb-system | grep Image: 명령으로 헬름 set 옵션을 통해 변경된 MetalLB의 태그가 v0.8.3인지 확인한다.
+```shell
+kubectl describe pods -n metallb-system | grep Image:
+```
+```shell
+    Image:         quay.io/metallb/controller:v0.3.3
+    Image:         quay.io/metallb/speaker:v0.8.3
+    Image:         quay.io/metallb/speaker:v0.8.3
+    Image:         quay.io/metallb/speaker:v0.8.3
+    Image:         quay.io/metallb/speaker:v0.8.3
+```
+10. 헬름을 통해서 MetalLB가 생성된 것을 확인했으니 간단하게 테스트를 해보자.
+디플로이먼트 1개를 배포하고 LoadBalancer 타입으로 노출하고 IP가 정상적으로 할당됐는지 확인한다.
+```shell
+kubectl create deployment echo-ip --image=sysnet4admin/echo-ip
+kubectl expose deployment echo-ip --type=LoadBalancer --port=80
+kubectl get service echo-ip
+```
+```shell
+deployment.apps/echo-ip created
+```
+```shell
+service/echo-ip exposed
+```
+```shell
+NAME      TYPE           CLUSTER-IP    EXTERNAL-IP    PORT(S)        AGE
+echo-ip   LoadBalancer   10.98.56.23   192.168.1.11   80:31260/TCP   10s
+```
+
+11. 이후 실습에서 MetalLB는 계쏙 사용할 것이므로 배포했던 echo-ip 관련 오브젝트만 삭제한다.
+```shell
+kubectl delete service echo-ip
+kubectl delete deployment echo-ip
+```
+ 
 ## 5.3 젠킨스 설치 및 설정하기
+
+
 ## 5.4 젠킨스로 CI/CD 구현하기
 ## 5.5 젠킨스 플러그인을 통해 구현되는 GitOps
 
