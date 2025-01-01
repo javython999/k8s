@@ -3452,6 +3452,273 @@ kubectl delete deployment echo-ip
  
 ## 5.3 젠킨스 설치 및 설정하기
 
+### 5.3.1 헬름으로 젠킨스 설치하기
+1. 젠킨스로 지속적 통합을 진행하는 과정에서 컨테이너 이미지를 레지스트리에 푸시하는 단계가 있다.
+이때 이미지를 저장하는 레지스트리는 앞서 '4.4.2 레지스트리 구성하기'에서 구성한 이미지 레지스트리를 사용한다.
+다음과 같은 실행 결과가 나오지 않는다면 4장의 실습을 통해 레지스트리를 우선 구성하기 바란다.
+```shell
+docker ps -f name=registry
+```
+
+2. 헬름으로 설치되는 젠킨스는 파드에서 동작하는 애플리케이션이기 때문에 PV를 마운트 하지 않으면 파드가 다시 시작될 때 내부 볼륨에 저장하는 모든 데이터가 삭제 된다.
+이를 방지하기 위해서 애플리케이션의 PV가 NFS를 통해 프로비저닝될 수 있게 NFS 디렉터리를 /nfs_shared/jenkins에 만들겠다.
+미리 정의된 nfs-exporter.sh jenkins를 실행한다.
+이 스크립트는 NFS용 디렉터리를 만들고 이를 NFS 서비스를 생성하는 과정이 담겨 있다.
+```shell
+~/_Book_k8sInfra/ch5/5.3.1/nfs-exporter.sh jenkins
+```
+```shell
+Created symlink from /etc/systemd/system/multi-user.target.wants/nfs-server.service to /usr/lib/systemd/system/nfs-server.service.
+```
+3. 만들어진 디렉터리에 부여된 사용자 ID(uid)와 그룹 ID(gid)의 번호를 -n 옵션으로 확인한다. 0번은 root 사용자에 속해 있다는 의미이다.
+```shell
+ls -n /nfs_shared
+```
+```shell
+drwxr-xr-x. 2 0 0 6 Dec 31 19:19 jenkins
+```
+
+4. 젠킨스를 헬름 차트로 설치해 애플리케이션을 사용하게 되면 젠킨스의 여러 설정 파일과 구성 파일들이 PVC를 통해 PV에 파일로 저장된다.
+이때 PV에 적절한 접근 ID를 부여하지 않으면 PVC를 사용해 파일을 읽고 쓰는 기능에 문제가 발생할 수 있다.
+이런 문제를 방지하기 위해서 `chown 1000:1000 /nfs_shared/jenkins` 명령어로 젠킨스 PV가 사용할 NFS 디렉터리에 대한 접근 ID(사용자 ID, 그룹 ID)를 1000번으로 설정하겠다.
+1000번으로 설정한 이유는 젠킨스 컨트롤러 이미지에 기본적으로 사용하는 유저 ID와 그룹 ID가 1000번이기 때문이다.
+```shell
+chown 1000:1000 /nfs_shared/jenkins/
+ls -n /nfs_shared
+```
+```shell
+drwxr-xr-x. 2 1000 1000 6 Dec 31 19:19 jenkins
+```
+
+5. 젠킨스는 사용자가 배포를 위해 생성한 내용과 사용자의 계정 정보, 사용하는 플러그인과 같은 데이터를 저장하기 위해서 PV와 PVC의 구성을 필요로 한다.
+시전 구성된 jenkins-volume.yaml을 이용해 PV와 PVC를 구성하고, 구성된 PV와 PVC가 Bound 상태인지 확인한다.
+
+```shell
+kubectl apply -f ~/_Book_k8sInfra/ch5/5.3.1/jenkins-volume.yaml
+kubectl get pv jenkins
+kubectl get pvc jenkins
+```
+```shell
+persistentvolume/jenkins created
+persistentvolumeclaim/jenkins created
+```
+```shell
+NAME      CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM             STORAGECLASS   REASON   AGE
+jenkins   10Gi       RWX            Retain           Bound    default/jenkins                           3m48s
+```
+```shell
+NAME      STATUS   VOLUME    CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+jenkins   Bound    jenkins   10Gi       RWX                           4m36s
+```
+
+6. 젠킨스를 설치해보자. 젠킨스 설치에는 필요한 인자가 많기 때문에 모든 인자를 포함해 사전에 구성한 jenkins-install.sh를 실행해 젠킨스를 설치하겠다.
+실행하고 나면 젠킨스 릴리스에 대한 정보가 나타나는 것을 확인할 수 있다.
+```shell
+~/_Book_k8sInfra/ch5/5.3.1/jenkins-install.sh
+```
+```shell
+NAME: jenkins
+LAST DEPLOYED: Tue Dec 31 20:03:24 2024
+NAMESPACE: default
+STATUS: deployed
+REVISION: 1
+NOTES:
+1. Get your 'admin' user password by running:
+  printf $(kubectl get secret --namespace default jenkins -o jsonpath="{.data.jenkins-admin-password}" | base64 --decode);echo
+2. Get the Jenkins URL to visit by running these commands in the same shell:
+  NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+        You can watch the status of by running 'kubectl get svc --namespace default -w jenkins'
+  export SERVICE_IP=$(kubectl get svc --namespace default jenkins --template "{{ range (index .status.loadBalancer.ingress 0) }}{{ . }}{{ end }}")
+  echo http://$SERVICE_IP:80/login
+
+3. Login with the password from step 1 and the username: admin
+
+4. Use Jenkins Configuration as Code by specifying configScripts in your values.yaml file, see documentation: http:///configuration-as-code and examples: https://github.com/jenkinsci/configuration-as-code-plugin/tree/master/demos
+
+For more information on running Jenkins on Kubernetes, visit:
+https://cloud.google.com/solutions/jenkins-on-container-engine
+For more information about Jenkins Configuration as Code, visit:
+https://jenkins.io/projects/jcasc/
+```
+* `NAME: jenkins` 설치된 젠킨스의 릴리스 이름은 jenkins이다. 이후 헬름 관련 명령으로 젠킨스를 조회, 삭제, 변경 등을 수행할 때 이 이름을 사용한다.
+* `NAMESPACE: deafult` 젠킨스가 배포된 네임스페이스는 default 이다.
+* `REVISION: 1` 배포된 릴리스가 몇 번째로 배포된 것인지 알려준다. 이 젠킨스는 처음 설치된 것임을 알 수 있다. helm upgrade 명령어를 사용해 젠킨스의 버전을 업그레이드할 때마다 REVISION은 1씩 증가한다.
+또한 업그레이드 작업 후 이전 버전으로 돌아가기 위해 helm rollback 명령어를 사용할 수 있다. helm rollback 명령어 사용 시 REVISION 번호를 집접 지정해 특정 리비전으로 돌아가도록 설정할 수 도 있다.
+* `NOTES` 설치와 관련된 안내 사항을 몇 가지 표시하고 있습니다. 
+NOTES의 1번은 젠킨스의 관리자 비밀번호를 얻어오기 위한 명령어이다.
+NOTES의 2번은 젠킨스가 구동되는 파드에 접속할 수 있도록 외부의 트래픽을 쿠버네티스의 파드로 전달하게 만드는 설정이다. 외부에서 쉽게 접속하기 위해서 이 실습에서는 트래픽을 쿠버네티스의 파드로 전달하게 만드는 설정이다.
+외부에서 쉽게 접속하기 위해서 이 실습에서는 트래픽을 전달하는 설정을 하지 않고 로드밸런서를 사용하겠다.
+NOTES의 3번에 표시된 admin은 젠킨스 접속 시 사용할 유저 이름이다.
+
+7. 순서대로라면 젠킨스의 코드를 살펴봐야 하지만 코드를 이해하기 위해서는 배포된 젠킨스 디플로이먼트의 정보를 함께 비교해서 봐야 한다.
+따라서 우선 디플로이먼트가 정상적으로 배포됐는지 확인한다.
+```shell
+kubectl get deployment
+```
+```shell
+NAME      READY   UP-TO-DATE   AVAILABLE   AGE
+jenkins   1/1     1            1           7m57s
+```
+8. 배포된 젠킨스가 외부에서 접속할 수 있는 상태인지 서비스의 상태를 확인한다.
+```shell
+kubectl get service jenkins
+```
+```shell
+NAME      TYPE           CLUSTER-IP     EXTERNAL-IP    PORT(S)        AGE
+jenkins   LoadBalancer   10.98.187.64   192.168.1.11   80:32287/TCP   9m19s
+```
+9. 젠킨스를 처음으로 배포해봤으니 파드 상태도 자세히 살펴보자. 그런데 젠킨스가 마스터 노드에 있다. 마스터에도 파드가 배포될 수 있었는지 의문일 것이다. 
+```shell
+kubectl get pod -o wide
+```
+```shell
+NAME                       READY   STATUS    RESTARTS   AGE   IP              NODE    NOMINATED NODE   READINESS GATES
+jenkins-76496d9db7-d24fh   2/2     Running   0          10m   172.16.171.83   m-k8s   <none>           <none>
+```
+
+10. 의문점을 해결하기 위해서 `kubectl get node m-k8s -o yaml | nl`과 `kubectl get deployments jenkins -o yaml | nl` 명령을 통해서 상태를 비교해 보자.
+```shell
+kubectl get node m-k8s -o yaml | nl
+```
+```shell
+   164    taints:
+   165    - effect: NoSchedule
+   166      key: node-role.kubernetes.io/master
+```
+```shell
+kubectl get deployments jenkins -o yaml | nl
+```
+```shell
+   562        tolerations:
+   563        - effect: NoSchedule
+   564          key: node-role.kubernetes.io/master
+```
+출력되는 많은 줄 중에 위에 표시된 테인트(taints)와 톨러레이션(tolerations)이 이런 결과를 만드는 설정이다.
+테인트는 손에 잡기 싫은것, 피하고 싶은 것, 가지지 말았으면 하는 것을 의미한다. 그렇지만 상황에 따라 테인트가 설정돼 있는 곳을 만져야 하는 경우가 있다.
+그러기 위해서는 톨러레이션, 즉 참아내는 인내가 필요한 것이다.
+
+쿠버네티스의 테인트와 톨러레이션은 사전적인 의미와 반대이다. 
+위에서 언급한 것처럼 매우 특별하게 취급돼야 하는 곳에는 테인트를 설정해, 쉽게 접근하지 못하는 소중한 것으로 설정한다.
+그리고 톨러레이션이라는 특별한 키를 가져야만 이곳에 출입할 수 있다.
+즉 현재 상태에서는 마스터 노드에 테인트가 설정돼 있어 특별한 목적으로 사용되는 노드라는 것을 명시해 두었다.
+일반적으로 마스터 노드 이외에도 GPU 노드, DB 전용 노드 등의 특별한 목적으로 사용 될 때 주로 사용한다.
+
+관리의 편의를 위해 젠킨스 컨트롤러가 여러 곳에 스케줄되지 않고 마스터 노드인 m-k8s에서만 스케줄 될 수 있도록 구성했다.
+앞으로 컨트롤러를 가지는 애플리케이션 배포시에는 동일하게 마스터 노드에 컨트롤러를 구성하겠다.
+
+테인트와 톨러레이션은 관계를 정의하는 것에 따라 배포를 상당히 유연하게 만들 수 있다.
+테인트는 키와 값 그리고 키와 값에 따른 효과의 조합을 통해 테인트를 설정한 노드에 파드 배치의 기준을 설정한다.
+그리고 톨러레이션은 테인트와 마찬가지로 키, 값, 효과를 가지고 있으며 이외에 연산자를 추가로 가지고 있다.
+
+우선 테인트에 대한 요소를 살펴보면 키와 값의 조합은 테인트를 설정한 노드가 어떤 노드인지를 구분하기 위해 사용한다.
+키는 필수로 설정해야 하지만 값은 생략할 수 있다. 9번 실습의 노드 명세에 나타난 key: node-role.kubernetes.io/master는 이 노드가 마스터 역할을 한다는 것을 나타내기 위해 작성된 것이다.
+효과는 테인트와 톨레이션의 요소인 키 또는 값이 일치하지 않는 파드가 노드에 스케줄되려고 하는 경우 어떤 동작을 할 것인지를 나타낸다.
+효과는 `NoSchedule`, `PreferNoSchedule`, `NoExecute`를 값으로 가질 수 있는데 효과에 따라 테인트를 설정한 노드는 파드를 새로 배치하는 경우와 파드가 이미 배치된 노드에 대한 동작이 다르다.
+
+|효과              |테인트가 설정된 노드에 파드 신규 배치             |파드가 배치된 노드에 테인트 설정|
+|-----------------|------------------------------------------|-------------------------|
+|NoSchedule       |노드에 파드 배치를 거부                        |노드에 존재하는 파드 유지      |
+|PreferNoSchedule |다른 노드에 파드 배치가 불가능 할때 노드에 파드 배치 |노드에 존재하는 파드 유지      |
+|NoExecute        |노드에 파드 배치를 거부                        |파드를 노드에서 제거          |
+
+이번에는 톨레이션의 요소들에 대해 살펴보자. 톨레이션은 테인트와 마찬가지로 키와 값, 효과를 가지고 있으며 연산자라는 특별한 요소를 추가로 가지고 있다.
+톨러레이션은 테인트가 설정된 노드로 들어가기 위한 특별한 열쇠의 역할을 하며 키와 효과는 반드시 일치해야 한다.
+이때 톨러레인션에만 존재하는 연산자는 기본적으로 Equal로 동작해 테인트와 톨러레이션을 비교하는 역할을 한다.
+Exists의 경우에는 비교할 키와 값이 존재한다는 가정으로 테인트에 진입할 수 있는 만킁 키로 바꿔주는 역할을 한다.
+
+톨러레이션은 톨러레이션의 키, 값, 효과를 사용해 연산자를 통해 비교한 후 조건에 맞는 테인트를 식별한다.
+키와 효과중 생략된 요소가 있다면 해당 요소는 묵시적으로 모든 키 혹은 모든 효과를 의미한다.
+톨러레이션의 키, 값, 효과는 테인트의 키, 값, 효과와 조건에 맞는지를 일치(Equal) 혹은 존재(Exists) 연산자를 통해서 판단한다.
+연산자를 생략할 경우에는 묵시적으로 Equal을 의미한다.
+조건 판단 결과 테인트와 톨러레이션의 조건이 맞다면 테인트가 설정된 노드에 톨러레이션을 가진 파드를 배치할 수 있다.
+조건이 맞다고 파단하는 기준은 Equal 연산자를 사용했을 때 테인트와 톨러레이션의 키와 값 그리고 효과까지 일치하는 경우이다.
+Exists 연산자를 사용했을 때는 값은 반드시 생략해야 하며 이 상태에서 키와 효과의 일치 여부를 판단하게 된다.
+또한 키와 효과를 모두 생략한 상태에서 Exists 연산자만 사용한다면 테인트의 키와 효과는 모든 키와 모든 효과를 의미하므로 Exists 연산자 하나만으로도 테인트가 설정된 모든 노드에 대해 해당 톨러레이션을 설정한 파드를 배포할 수 있게 된다.
+
+그러면 이제 헬름을 통해 젠킨스를 설치했던 스크립트인 jenkins-install.sh의 내용을 살펴보겠다.
+다수의 `--set` 값들을 통해서 이 책 환경에 맞는 젠킨스를 설치할 수 있다.
+```shell
+     1  #!/usr/bin/env bash
+     2  jkopt1="--sessionTimeout=1440"
+     3  jkopt2="--sessionEviction=86400"
+     4  jvopt1="-Duser.timezone=Asia/Seoul"
+     5  jvopt2="-Dcasc.jenkins.config=https://raw.githubusercontent.com/sysnet4admin/_Book_k8sInfra/main/ch5/5.3.1/jenkins-config.yaml"
+     6  jvopt3="-Dhudson.model.DownloadService.noSignatureCheck=true"
+     7  helm install jenkins edu/jenkins \
+     8  --set persistence.existingClaim=jenkins \
+     9  --set master.adminPassword=admin \
+    10  --set master.nodeSelector."kubernetes\.io/hostname"=m-k8s \
+    11  --set master.tolerations[0].key=node-role.kubernetes.io/master \
+    12  --set master.tolerations[0].effect=NoSchedule \
+    13  --set master.tolerations[0].operator=Exists \
+    14  --set master.runAsUser=1000 \
+    15  --set master.runAsGroup=1000 \
+    16  --set master.tag=2.249.3-lts-centos7 \
+    17  --set master.serviceType=LoadBalancer \
+    18  --set master.servicePort=80 \
+    19  --set master.jenkinsOpts="$jkopt1 $jkopt2" \
+    20  --set master.javaOpts="$jvopt1 $jvopt2 $jvopt3"
+```
+* 2~3번 라인: 기본 설정으로 30분 넘게 사용하지 않으면 세션이 종료돼 실습에 방해가 된다. 추가 설정을 통해서 세션의 유효 기간을 하루(1440분)로 변경하고 세션을 정리하는 시간 또한 하루(85440초)로 변경한다.
+* 4번 라인: 기본 설정으로는 시간대가 정확히 맞지 않아 젠킨스를 통한 CI/CD 시에 명확히 작업을 구분하기 힘들다. 이를 서울(Asis/Seoul) 시간대로 변경한다.
+* 5번 라인: 쿠버네티스를 위한 젠킨스 에이전트 노드 설정은 Pod Template라는 곳을 통해서 설정값을 입력한다. 그런데 가상 머신인 마스터 노드가 다시 시작하게 되면, 이에 대한 설정이 초기화 된다.
+따라서 설정값을 미리 입력해 둔 야믈 파일(jenkins-config.yaml)을 깃허브 저장소에서 받아오도록 설정한다. 미리 입력해 적용되는 내용은 `5.3.4 젠킨스에이전트 설정하기`에서 알아보자.
+* 7번 라인: edu 차트 저장소의 jenkins 차트를 사용해 jenkins 릴리스를 설치한다.
+* 8번 라인: PVC 동적 프로비저닝을 사용할 수 없는 가상 머신 기반의 환경이기 때문에 이미 만들어 놓은 jenkins라는 이름의 PVC를 사용하도록 설정한다.
+* 9번 라인: 젠키스 접속 시 사용할 관리자 비밀번호를 admin으로 설정한다. 이 값을 설정하지 않을 경우에는 설치 과정에서 젠킨스가 임의로 생성한 비밀번호를 사용한다.
+* 10번 라인: 젠킨스의 컨트롤러 파드를 쿠버네티스 마스터 노드 m-k8s에 배치하도록 선택한다. nodeSelector는 nodeSelector 뒤에 따라오는 문자열과 일치하는 레이블을 가진 노드에 파드를 스케줄링 하겠다는 설정이다.
+위의 설정은 kubernetes.io/hostname=m-k8s 레이블을 가지는 노드에 파드를 배치하겠다는 의미이다.
+kubernetes와 .io 사이에 \가 붙어있다. kubernetes.io로 입력하게 되면 kubernetes의 하위 속성으로 io를 분리해서 인식하게 된다. kubernetes.io를 하나의 문자열로 인식시키기 위해 이스케이프 시킨 것이다.
+* 11~13번 라인: 10번 줄을 통해 m-k8s 노드에 파드를 배치할 것을 명시했지만 11~13번째 줄의 옵션이 없다면 마스터 노드에 파드를 배치할 수 없다.
+현재 마스터 노드에는 파드를 배치하지 않도록 NoSchedule이라는 테인트가 설정된 상태이기 때문이다. 테인트가 설정된 노드에 파드를 배치하려면 tolerations라는 옵션이 필요하다.
+tolerations는 테인트에 예외를 설정하는 옵션이다. tolerations에는 예외를 설정할 테인트의 key와 effect, operator가 필요하다.
+위의 코드는 key가 node-role.kubernetes.io/master이며 effect가 NoSchedule인 테인트가 존재할 때 테인트를 예외 처리해 마스터 노드에 파드를 배치할 수 있또록 설정한다.
+* 14~15번 라인: 젠킨스를 구동하는 파드가 실행될 때 가질 유저 ID와 그룹 ID를 설정한다. 이때 사용되는 runAsUser는 사용자 ID를 의미하고, runAsGroup은 그룹 ID를 의미한다.
+* 16번 라인: 이후 젠킨스 버전에 따른 UI 변경을 막기 위해 젠킨스 버전을 2.2249.3으로 설정한다.
+* 17번 라인: 차트로 생성되는 서비스의 타입을 로드밸런서로 설정해 외부 IP를 받아온다.
+* 18번 라인: 젠킨스가 HTTP상에서도 구동되도록 포트를 80으로 지정한다.
+* 19번 라인: 젠킨스에 추가로 필요한 설정들을 2~3번째 줄에 변수로 선언했습니다. 이변수들을 호출해 젠킨스에 적용한다.
+* 20번 라인: 젠킨스를 구동하기 위한 환경설정에 필요한 것들을 4~5번 라인에 변수로 선언했다. 이 변수들을 호출해 젠킨스 실행환경(JVM)에 적용한다.
+
+### 5.3.2 젠킨스 살펴보기
+젠킨스를 직접 접속해 살펴보기에 앞서 현재 설치된 젠킨스의 구조를 간단히 살펴보자.
+젠킨스 컨트롤러는 마스터 노드에 설치했지만 젠킨스 에이전트는 필요 시에 생성되고 작업을 마치면 삭제되는 임시적인 구조를 가진다.
+따라서 젠킨스 에이전트 작업 내용들은 삭제 전에 젠킨스 컨트롤러에 저장돼야 하며, 이를 위해 젠킨스 에이전트 서비스가 항상 동작하고 있다.
+kubectl get service 명령으로 현재 젠킨스 에이전트 서비스를 확인할 수 있다.
+```shell
+kubectl get service
+```
+```shell
+NAME            TYPE           CLUSTER-IP     EXTERNAL-IP    PORT(S)        AGE
+jenkins         LoadBalancer   10.98.187.64   192.168.1.11   80:32287/TCP   136m
+jenkins-agent   ClusterIP      10.101.87.69   <none>         50000/TCP      136m
+kubernetes      ClusterIP      10.96.0.1      <none>         443/TCP        3d23h
+```
+젠킨스 컨트롤러가 단독으로 설치할 경우에는 컨트롤러가 설치된 서버에 젠킨스 자체 시스템 관리, CI/CD 설정, 빌드 등의 작업을 모두 젠킨스 컨트롤러 단일 노드에서 수행한다.
+하지만 컨트롤러-에이전트 구조를 설치할 경우 컨트롤러는 젠킨스 자체의 관리 및 CI/CD와 관련된 설정만을 담당하고 실제 빌드 작업은 에이전트로 설정된 노드에서 이루어 진다.
+
+> 젠킨스 접속하기
+
+호스트OS의 브라우저에 로드밸런서 타입의 외부 IP인 192.168.1.11에 접속하면 젠킨스 로그인 화면이 나온다.
+로그인을 하면 메인화면이 나오고 좌측에는 다양한 메뉴들이 있다.
+* 새로운 Item: 젠킨스를 통해서 빌드할 작업을 아이템이라고 한다. 아이템에 대한 설명은 '5.4 젠킨스로 CI/CD 구현하기'에서 자세히 다루겠다.
+* 사람: 사용자를 관리하는 메뉴이다. 현재는 최초 접속한 admin 사용자만 등록돼 있다. 사용자의 정보를 관리하는 데는 젠킨스를 구동하는 서버에서 직접 사용자를 관리하는 방법과 젠킨스가별도의 데이터베이스를 가지고 자체적으로 사용자를 관리하는 방법이 있는데,
+별도의 데이터베이스가 없는 환경이기 때문에 현재는 직접 사용자를 관리하도록 구성돼 있다.
+* 빌드 기록: 젠킨스 작업에 대한 성고, 실패, 진행 내역을 이곳에서 볼 수 있다.
+* Jenkins 관리: 젠킨스의 시스템, 보안, 도구, 플러그인 등 각종 설정을 수행하는 곳이다.
+* My Views: 젠킨스에서 각종 작업을 분류해 모아서 볼 수 있는 대시보드이다.
+* Lockable Resources: 젠킨스에서는 한 번에 여러 개의 자업이 동시에 일어날 수 있다. 이때 작업이 진행중이라면 옵션에 따라 다른 작업은 대기를 해야할 수 있다. 이를 동시성 문제라고 하며 젠킨스에서는 작업이 끝날 때까지 같은 작업을 하지 못하게 하는 잠금장치를 Lockable Resource로 설정할 수 있다.
+* New View: 대시보드인 View를 생성하는 작업이다.
+
+젠킨스를 사용하려면 몇 가지 기본 설정이 필요하다. Jenkins 관리 메뉴를 눌러 젠킨스 설정화면에 대해 알아보겠다.
+1. 시스템 설정: 메인 화면에 표시될 문구, 동시에 실행할 수 있는 실행기의 개수, 젠킨스를 접속할 수 있는 경로, 관리자의 정보, 시스템 전체에 사용할 수 있는 환경변수, 시스템에서 공통적으로 활용해야하는 플러그인 파일의 경로와 설정 정보등을 이곳에서 설정할 수 있다.
+2. Global Tool Configuration: 빌드 과정에서 사용하는 도구(Maven, JDK, Git, Docker 등)의 경로 및 옵션을 설정할 수 있다. 플러그인 관리를 통해추가로 사용할 도구를 설정하면 이 메뉴에서 해당 도구를 설정하는 메뉴를 찾을 수 있다.
+3. 플로그인 관리: 젠킨스에서 사용할 플러그인을 설치, 삭제, 업데이트할 수 있다. 젠킨스 홈 화면에서 보이는 알람은 여기서 플로그인을 업데이트해 해결할 수 있다.
+4. 노드 관리: 젠킨스에서 사용하는 노드를 추가, 삭제하거나 노드의 세부 설정 및 상태 모니터링을 할 수 있는 메뉴이다. 젠킨스에서는 작업을 수행할 수 있는 각 단위를 쿠버네티스와 동일하게 노드라고 하며, 
+노드에 레이블을 붙여 관리하거나 노드의 동작 방식을 설정할 수 있다.
+5. Configuration as Code: 젠킨스의 설정을 내보내거나 불러올 수 있다. 이 메뉴를 통해 다른 곳에서 구성한 젠킨스 설정을 옮겨오거나 내 젠킨스의 설정을 내보내 공유할 수 있다.
+6. Manage Credentials: 젠킨스에서 사용하는 플러그인에 필요한 접근 키, 비밀 키, API 토큰과 같은 접속에 필요한 인증 정보를 관리한다. 노출이 되면 곤란한 정보이기 때문에 프로젝트에 직접 입력하지 않고 필요한 경우 호출해서 사용한다.
+
 
 ## 5.4 젠킨스로 CI/CD 구현하기
 ## 5.5 젠킨스 플러그인을 통해 구현되는 GitOps
