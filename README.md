@@ -3750,6 +3750,181 @@ kubernetes      ClusterIP      10.96.0.1      <none>         443/TCP        3d23
 3. 설치된 플러그인 목록: 현재 젠킨스에 설치돼 있는 플러그인 정보를 확인할 수 있으며, 더 이상 필요가 없어진 플러그인의 경우 이 페이지에서 제거할 수 있다.
 4. 고급: 외부와 연결되는 프록시 서버 설정을 할 수 있다. 외부와 연결된 프록시 서버를 통해 내부망에서도 젠킨스를 설치하고 업데이트할 수 있다.
 
+### 5.3.4 젠킨스 에이전트 설정하기
+젠킨스 에이전트에도 미리 설정해뒀지만, 입력된 설정들의 위치와 목적을 이해하고 넘어가자.
+
+> 젠킨스 노드 관리
+
+1. 신규 노드: 에이전트 노드를 추가한다. 고정된 여러 대의 서버에서 에이전트 노드를 추가해야 할 때 필요합니다.
+2. Configure Clouds: 클라우드 환경 기반의 에이전트를 설정할 때 필요하다. 쿠버네티스 위에 설치된 젠킨스의 에이전트에 관한 설정도 이 메뉴에서 설정할 수 있다.
+3. Node Monitoring: 에이전트 노드의 안정성을 위한 각종 모니터링과 관련된 사항을 설정할 수 있다.
+4. 노드 목록: 현재 구성된 노드의 목록을 보여준다. 쿠버네티스상에 설치한 젠킨스는 작업이 진행될 때만 파드 형태의 에이전트가 생성되고 작업이 끝나면 파드가 사라지기 때문에 작업중이 아니라면 이 목록에 젠킨스 컨트롤러 노드만 표시된다.
+
+> 쿠버네티스에서 젠킨스 에이전트 구성
+
+Configure Clouds 메뉴로 이동한다.
+이미 많은 내용이 입력이 돼 있는데, 헬름을 통해 젠킨스를 설치할 때 JCasC(Jenkins Configuration as Code)라는 기능을 사용해 현재 쿠버네티스 환경에 맞게 많은 설정을 자동화 했기 때문이다.
+따라서 사용자는 일부만 수정하면 된다. 이런 과정은 kubernetes 플러그인의 도움을 받아서 진행되므로 앞에서 플러그인 업데이트를 먼저 진행했다.
+
+1. kubernetes: 쿠버네티스 설정과 관련된 영역이다. Name에 이름을 지정할 수 있다.
+2. kubernetes Cloud details: 쿠버네티스 클러스터에 접속하기 위한 정보를 설정할 수 있다. 헬름을 통해 쿠버네티스 위에 설치한 젠킨스는 쿠버네티스 클러스터 내부에서 동작하기 때문에
+기본 값으로 둬도 무방하지만, 쿠버네티스 클러스터 외부에 젠킨스를 설치한 경우에는 이곳에서 쿠버네티스에 대한 정보를 수정해야 한다.
+3. Pod Templates: 쿠버네티스 위에 설치된 젠킨스는 작업 시 에이전트를 파드의 형태로 생성한다. 이곳에서 에이전트로 사용할 파드와 관련된 설정을 한다.
+이때 Pod Template은 젠킨스 컨트롤러를 다시 시작하면 모든 설정이 초기화 된다.따라서 현재 환경에서 마스터 노드를 다시 시작하면 모든 설정이 초기화 된다.
+이를 해결하기 위해 헬름 설치시 미리 구성한 설정값(jenkins-config.yaml)을 읽어 들이도록 구성했다.
+젠킨스 에이전트에 대한 설정은 현재 기본 Template인 default에 작성돼 있다. 그리고 이에 대한 설정값을 미리 헬름을 통해 입력받았다. 따라서 어떤 부분들이 번경됐는지 코드와 함께 살펴보겠다.
+
+> 젠킨스 에이전트 템플릿의 상세 내용
+
+젠킨스의 CI/CD 작업은 실제로 에이전트로 동작하는데, 쿠버네티스 환경에서는 에이전트가 파드로 운영되나 이 파드에는 도커 빌드를 위한 docker 명령과 쿠버네티스 배포를 위한 kubectl 명령이 존재하지 않는다.
+가장 쉬운 해결 방법은 호스트 시스템에 있는 도커와 kubectl을 그대로 이용하는 것이다. 따라서 hostpath를 잡아 각 노드에 이미 설치돼 있는 도커와 kubectl을 그대로 이용하겠다.
+여기서 hostpath란 쿠버네티스 파드에서 워커 노드에 있는 특정 경로를 마운트해서 파드 내에서 사용할 수 있는 것을 말한다.
+편의를 위해서 미리 설정된 내용이 default pod Template에 이미 적용돼 있다.
+Pod Template의 내용을 여러 번 보다보면 어디선가 보던 구조임을 알 수 있다. 
+Pod Template은 말 그대로 파드의 구성 요소를 그대로 메뉴상에 넣어둔 것이다. 상당히 많은 내용이 있으나 실제로는 파드 생성에 필요한 정보들을 그대로 메뉴로 구현한 것이다.
+해당 내용을 생된 임의의 파드를 선택해서 `kubectl get pod <이름> -o yaml`로 나온 결과를 지금부터 진행할 Pod Template과 비교해보면 훨씬 더 쉽게 이해 될 것이다.
+
+1. Name: Pod Template 이름을 설정할 수 있는 페이지가 가장 위에 있다.
+2. Labels: 에이전트 노드를 구분할 때 사용할 레이블을 설정할 수 있다. 여기서 설정하는 레이블은 pod metadata에 label을 설정하는 것과 동일하다.
+3. Usage: 노드의 사용방법을 설정할 수 있으며 젠킨스 컨트롤러와 마찬가지로 Use this node as much as possible(이 노드를 가장 많이 사용)인 기본 설정을 그대로 사용하겠다.
+
+> Pod template에서 사용할 컨테이너 정보
+1. Name: 컨테이너를 구분하기 위한 이름
+2. Docker image: 컨테이너에서 사용할 이미지를 지정한다. 이미지는 기본 설정대로 젠킨스에서 제공하는 inbound-agent:4.3-4를 사용하겠다.
+3. Command to run: 여기서 적혀진 명령은 컨테이너에서 실행하는 명령이 된다. 
+4. Environment Variable: 컨테이너의 환경변수를 설정하는 곳이다.
+'5.3.3 젠킨스 컨트롤러를 설정하기'에서 설정한 JENKINS_URL을 Environment Variable 영역에도 동일하게 http://192.168.1.11 로 설정했다.
+이렇게 바뀐 JENKINS_URL은 이후 '5.5 젠킨스 플러그인으로 구현하는 GitOps'에 실습에 사용된다.
+
+다음으로 빌드 작업중 호스트에 설치된 명령어를 파드 내부에서 사용하기 위한 Volumes를 설정하는 메뉴를 살펴보자.
+
+1. Config Map Volume: 쿠버네티스에 존재하는 ConfigMap 오브젝트를 파드 내부에 연결해 이를 파드에서 사용할 수 있도록 한다.
+2. Empty Dir Volume: 파일 및 내용이 없는 디렉터리를 파드 내부에 생성한다. 젠킨스로 빌드 할 때 컨테이너가 여러 개 생성될 수 있는데, 이런 경우 컨테이너 간에 공유할 수 있는 디렉터리로 사용할 볼륨을 Empty Dir로 주로 사용한다.
+3. Host Path Volume: 호스트, 즉 쿠버네티스 워커 노드에 파일 및 디렉터리를 파드에서 사용할 수 있도록 연결해준다. 이를 통해 파드는 호스트에 위치한 명령이나 데이터를 사용할 수 있다.
+필요한 경우 파일을 저장해 파드가 사라진 경우에도 데이터를 보존할 수 있다. 실습에서는 이 볼륨을 사용해 파드에 필요한 실행 파일을 호스트에서 가지고 와서 사용한다.
+4. NFS Volume: NFS 서버에 위치한 원격의 디렉터리를 파드가 사용할 수 있도록 한다.
+5. Persistent Volume Claim: 쿠버네티스 클러스터에서 PVC로 설정한 볼륨을 파드에서 사용할 수 있도록 한다.
+6. Secret Volume: 쿠버네티스에 있는 Secrete 오브젝트를 파드 내부에 연결해 파드에서 사용할 수 있도록 한다.
+
+젠킨스를 이용한 배포 작업은 내부에서 셸 스크립트 단위로 작업을 나누어 구성할 수 있다.
+우리의 목적은 젠킨스를 이용해 컨테이너 이미지를 빌드하고 컨테이너를 쿠버네티스에 배포하는 것이다.
+이를 위해 젠킨스 내부에서 kubectl, docker와 같은 명령어를 사용해야 한다.
+하지만 배포되는 파드는 이와 같은 명령어들이 포함돼 있지 않은 도커 이미지이기 때문에 호스트에 존재하는 명령을 파드에서 그대로 사용할 수 있는 `Host Paht Volume`을 사용해 구성했다.
+Host path에 있는 내용이 Mount path로 설정되는 구조이다.
+
+1. `/usr/bin/kubectl`: kubectl 명령을 에이전트 파드 내부에서 사용할 수 있도록 호스트로부터 연결해준다. 이를 통해 빌드 작업중 쿠버네티스와 관련된 작업을 할 수 있다.
+2. `/bin/docker`: docker 명령을 에이전트 파드 내부에서 사용할 수 있도록 호스트로부터 연결해준다. 이를 통해 빌드 작업중 도커 이미지를 생성하고 저장소로 밀어 넣을 수 있다.
+3. `/var/run/docker.sock`: kubectl과 API 서버가 통신하는 것처럼 도커도 도커 데몬과 통신하기 위해서 API 서버 역할을 하는 docker.sock이 있다.
+따라서 이미 호스트에 설치된 소켓을 에이전트 파드에 사용하도록 설정해 줬다.
+
+> 서비스 어카운트, 사용자 ID, 그룹 ID
+1. 서비스 어카운트: 쿠버네티스 클러스터 및 오브젝트의 정보를 조회하기 위한 계정이다. 젠킨스에 접속하기 위한 admin 계정과 같은 개념이다.
+2. 사용자 ID: 에이전트 파드가 실행될 때 파드에 부여되는 숫자로, 리눅스 사용자에게 부여되는 숫자 식별자이다. 여기에서는 에이전트가 파드 루트 권한을 가진 사용자 ID를 사용하지 않게 하기 위해 사용자 ID에 대한 값을 1000으로 설정했다.
+3. 그룹 ID: 에이전트 파드가 실행될 때 파드에 부여되는 숫자로 리눅스 사용자에게 부여되는 숫자로 식별된 식별자이다. 관용적으로 리눅스에서 사용되는 0부터 500까지의 ID는 리눅스 시스템이 사용하는 ID이다.
+여기에서는 에이전트 파드가 시스템이 사용하는 ID를 쓰지 않도록 독립적인 컨테이너를 구동할 수 있게 하기 위해 993으로 설정했다.
+
+> jenkins 서비스 어카운트를 위한 권한 설정하기
+
+실제로 젠킨스 에이전트 파드에서 쿠버네티스 API 서버로 통신하려면 어카운트에 권한을 줘야 한다.
+권한을 주기 전에 우선 jenkins 서비스 어카운트가 존재하는지 kubectl get serviceaccounts로 확인한다.
+```shell
+kubectl get serviceaccounts
+```
+```shell
+NAME      SECRETS   AGE
+default   1         5d23h
+jenkins   1         2d2h
+```
+이제 서비스 어카운트 계정인 jenkins에 쿠버네티스 클러스터에 대한 admin 권한을 부여한다.
+```shell
+kubectl create clusterrolebinding jenkins-cluster-admin --clusterrole=cluster-admin --serviceaccount=default:jenkins
+```
+```shell
+clusterrolebinding.rbac.authorization.k8s.io/jenkins-cluster-admin created
+```
+jenkins 서비스 어카운트를 통해 젠킨스 에이전트 파드를 생성하거나 젠킨스 에이전트 파드내부에서 쿠버네티스의 오브젝트에 제약 없이 접근하러면 cluster-admin 역할(role)을 부여해야 한다.
+필요한 영역으로 나누어 권한을 부여하는 것이 일반적이나 효율적으로 학습하기 위해 cluster-admin 1개만 권한 부여 했다.
+서비스 어카운트에 cluster-admin 역할을 부여하고 이를 권한이 핑료한 서비스 어카운트(사용자, 그룹)인 jenkins에 묶어(binding)준다.
+이런 방식을 역할 기반 제어접근(RBAC, Role-Based Access Control)이라고 한다.
+
+쿠버네티스의 역할 부여 구조는 
+* 할 수 있는 일(무엇을 할 수 있나?)
+* 할 수 있는 주체(누가 할 수 있나?)
+의 결합으로 이루어진다.
+
+* Rules: 역할 기반 접근 제어 '할 수 있는 일'과 관련된 Role, ClusterRole이 가지고 있는 자세한 행동 규칙이다.
+Rules는 apiGroup, resouces, verbs의 속성을 가진다.
+쿠버네티스 클러스터상에서 어떤 행동을 한다는 것을 구체적으로 살펴보면 특정 API를 통해서 어떠한 자원에 접근해 목록이나 정보를 조회하거나 자원을 생성, 삭제, 수정하는 등의 행위를 하는 것을 의미한다.
+접근할 수 있는 API의 집합은 Rules에 apiGroups로 표현할 수있고, API 그룹에 분류된 자원 중 접근 가능한 자원을 선별하기 위해 resources를 사용한다.
+접근할 수 있는 자원이 정의됐다면 해당 자원에 대해서 할 수 있는 행동을 규정하기 위해 verbs를 사용할 수 있다. 
+이 행동의 종류는 get(정보 얻기), list(목록 조회), 자원 생성(create), 자원갱신(update), 일부 수정(patch), 감시(watch), 삭제(delete)가 있다.
+
+* Role, ClusterRole: '할 수 있는 일'을 대표하는 오브젝트이다.
+앞서 설명한 Rules에 적용된 규칙에 따른 동작을 할 수 있으며 적용 범위에 따라 Role과 ClusterRole로 나뉜다.
+Role은 해당 Role을 가진 주체가 특정 namespace에 대해 접근할 수 있게 한다.
+ClusterRole은 해당 ClusterRole을 가진 주체가 쿠버네티스 클러스터 전체에 대해서 접근할 수 있도록 한다.
+
+* RoleBinding, ClusterRoleBinding: Role과 ClusterRole이 대표하는 '무엇을 할 수 있나?'라는 속성을 '할 수 있는 주체'를 대표하는 속성인 Subjects와 연결시켜주는 역할을 한다.
+Role과 ClusterRole은 공통적으로 roleRef(할 수 있는 역할의 참조)와 subjects(수행 주체)라는 속성을 가지고 있으며 이 두가지가 결합하여 역할 기반 접근제어를 수행하게 된다.
+RoleBinding은 앞에서 설명한 Role과 결합하여 네임스페이스 범위의 접근 제어를 수행하고 ClusterRoleBinding은 ClusterRole과 결합해 클러스터 전체 범위의 접근 제어를 수행한다.
+
+* Subjects 역할 기반 접근 제어에서 행위를 수행하는 주체를 의미한다.
+Subjects는 특정 사용자 혹은 그룹, 서비스 어카운트를 속성으로 가질 수 있다.
+사용자란 쿠버네티스에 접근을 수행하는 실제 이용자를 의미한다.
+쿠버네티스 클러스터에 등록된 사용자의 목록은 kubecconfig의 users 섹션에 기록돼 있다.
+서비스 어카운트는 파드 내부의 프로세스에 적용되는 개념이다.
+파드 네임스페이스에 존재하는 default 서비스 어카운트를 사용하거나 특정한 서비스 어카운트를 사용하도록 설정할 수 있으며
+파드 내부의 프로세스는 설정된 서비스 어카운트로서 쿠버네티스 상에 존재하는 자원에 접근을 시도할 수 있다.
+
+앞에서 실행했던 kubectl create clusterrolebinding jenkins-cluster-admin --clusterrole=cluster-admin --serviceaccounts=default:jenkins의 의미를 다시 한번 살펴보자
+kubectl의 create를 통해서 clusterrolebinding을 jenkins-cluster-admin이라는 이름으로 만든다.
+그리고 두 가지 옵션을 주는데
+1. clusterrole에 묶여질 역할은 cluster-admin이라는 미리 정의된 클러스터 관리자 역할이다.
+2. jenkins-cluster-admin이라는 클러스터 역할의 서비스 어카운트를 jenkins로 지정한다. 이때 여러 가지의 서비스 어카운트가 존재할 수 있으므로 jenkins에 속해 있는 네임스페이스 default도 함께 지정한다.
+표로 정리하면 다음과 같다.
+
+|명령                             |설명                                                                                   |
+|--------------------------------|--------------------------------------------------------------------------------------|
+|kubectl create                  |오브젝트를 생성하는 kubectl 명령                                                            |
+|clusterrolebinding              |생성되는 오브젝트가 clusterrolebinding임을 나타낸다                                           |
+|jenkins-cluster-admin           |clusterrolebinding으로 생성되는 오브젝트의 일므이 jenkins-cluster-admin임을 나타낸다             |
+|--clusterrole=cluster-admin     |clusterrolebinding의 첫 번째 옵션으로, cluster-admin 역할을 부여한다                          |
+|--serviceaccount=default:jenkins|clusterrolebinding의 두번째 옵션으로, default에 있는 jenkins라는 서비스 어카운트에 이 권한을 부여한다|
+
+이렇게 적용된 내용을 확인하기 위해서 clusterrolebinding에 적용된 내용을 자세히 yaml로 출력해보자.
+```shell
+kubectl get clusterrolebindings jenkins-cluster-admin -o yaml
+```
+```shell
+     1  apiVersion: rbac.authorization.k8s.io/v1
+     2  kind: ClusterRoleBinding
+     3  metadata:
+     4    creationTimestamp: "2025-01-02T14:45:08Z"
+     5    managedFields:
+     6    - apiVersion: rbac.authorization.k8s.io/v1
+     7      fieldsType: FieldsV1
+     8      fieldsV1:
+     9        f:roleRef:
+    10          f:apiGroup: {}
+    11          f:kind: {}
+    12          f:name: {}
+    13        f:subjects: {}
+    14      manager: kubectl
+    15      operation: Update
+    16      time: "2025-01-02T14:45:08Z"
+    17    name: jenkins-cluster-admin
+    18    resourceVersion: "7633"
+    19    selfLink: /apis/rbac.authorization.k8s.io/v1/clusterrolebindings/jenkins-cluster-admin
+    20    uid: 74030f12-0303-4273-a39d-56e33d359e7d
+    21  roleRef:
+    22    apiGroup: rbac.authorization.k8s.io
+    23    kind: ClusterRole
+    24    name: cluster-admin
+    25  subjects:
+    26  - kind: ServiceAccount
+    27    name: jenkins
+    28    namespace: default
+```
 
 
 ## 5.4 젠킨스로 CI/CD 구현하기
