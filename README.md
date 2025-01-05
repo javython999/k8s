@@ -4125,9 +4125,359 @@ kubectl delete service pl-bulk-prod-svc
 kubectl delete deployment pl-bulk-prod 
 ```
 
+### 5.4.3 Pipeline 프로젝트로 구현하는 블루 그린 배포 전략
+3장에서 배운 rollout 기능 덕분에 무중단 배포가 가능하다. 하지만 이런 롤링 업데이트 배포 과정은 내부의 파드 개수가 많으면 업데이트 과정이 길어져
+다른 두 가지의 버전이 오랫동안 공존하는 경우가 발생할 수 있다.
+이런 상황을 방지하는 좋은 방법 중에 하나는 블루그린(Blue-green) 배포 전략을 사용하는 것이다.
 
+블루그린 배포 전략은 간단히 말해서 '모든 파드가 업데이트 된 이후에 트래픽을 전달하자'이다.
+2개의 디플로이먼트를 생성하고 기존에 배포된 디플로이먼트(블루)로 계속 트래픽을 전달하고 있다가
+새로 배포된 디플로이먼트(그린)에 모든 파드가 업데이트돼 트래픽을 처리하는데 문제가 없을 때 서비스를 모두 새로 배포된 디플로이머느(그린)으로 넘긴다.
+그리고 기존에 디플로이먼트(블루)를 삭제한다. 그리고 문제가 발생한 경우 기존 서비스 하던 디플로이먼트(블루)로 원복하는 것도 수월해 장애 복구도 쉽다.
+
+하지만 배포를 위한 디플로이먼트를 만들어야 하기 때문에 기존 디플로이먼트 배포 대비 최소 2배이상의 리소스가 필요하다는 제약이 있다.
+쉬운 장애 복구, 무중단 배포가 가능하다는 장점이 더 크기 때문에 리소스의 사용은 크게 부각되는 단점이 아니다.
+
+쿠버네티스 환경에서 블루그린 배포는 기본 기능이 아니기 때문에 구성할 수 없지만 젠킨스를 이용하면 구현이 가능하다.
+이제 젠킨스를 이용해 쿠버네티스 환경에 마즌 블루그린 배포 전략을 어떻게 구현할 수 있는지 살펴보자.
+
+1. 블루그린 배포를 구성하기 위해 홈 화면에서 새로운 Item을 눌러 새로운 아이템을 만드는 메뉴로 진입한다.
+2. 선택할 아이템은 Pipeline, 생성할 프로젝트의 일므은 dpy-pl-blue-green
+3. Definition에서 외부 소스 코드 저장소에 정의된 파일을 불러와서 사용하도록 Pipeline script from SCM을 선택한다. Repository URL을 `https://github.com/iac-source/blue-green` 으로 설정한다. Branch Specfifier를 `*/main`으로 설정한다.
+프로젝트를 빌드하기 전 블루그린 배포를 위해 작성한 Jenkinsfile이 달라진 부분이 있다. agent 부분을 any가 아닌 kubernetes로 변경해 불루그린 배포를 위한 에이전트를 별도로 설정하고,
+이를 yaml 파일로 작성해 적용한다. 이렇게 작성한 이유는 블루그린 배포에 동적으로 변동되는 오브젝트 값을 설정하려면 kustomize와 같은 도구를 사용해야하기 때문이다.
+그래서 kustomize를 사용하기 위해 전용 파드를 배포했다.
+
+```yaml
+pipeline {
+  agent {
+      kubernetes {
+      yaml '''
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          labels:
+            app: blue-green-deploy
+          name: blue-green-deploy
+        spec:
+          containers:
+            - name: kustomize
+              image: sysnet4admin/kustomize:3.6.1
+              tty: true
+              volumeMounts:
+                - mountPath: /bin/kubectl
+                  name: kubectl
+              command:
+                - cat
+          serviceAccount: jenkins
+          volumes:
+            - name: kubectl
+              hostPath:
+                path: /bin/kubectl
+      '''
+    }
+  }
+  stages {
+    stage('git scm update') {
+      steps {
+        git url: 'https://github.com/IaC-Source/blue-green.git', branch: 'main'
+      }
+    }
+    stage('define tag') {
+      step {
+        script {
+          if(env.BUILD_NUMBER.toInteger() % 2 == 1) {
+            env.tag = "blue"
+          } else {
+            env.tag = "green"
+          }
+        }
+      }
+    }
+    stage('deploy configmap and deployment') {
+      container('kustomize') {
+        dir('deployment') {
+          sh '''
+          kubectl apply -f configmap.yaml
+          kustomize create --resource ./deployment.yaml
+          echo "deploy new deployment"
+          kustomize edit add label deploy:$tag -f
+          kustomize edit set namesuffix -- -$tag
+          kustomize edit set image sysnet4admin/dashboard:$tag
+          kustomize build . | kubectl apply -f -
+          echo "retrieve new deployment"
+          kubectl get deployment -o wide
+          '''
+        }
+      }
+    }
+    stage('switching LB') {
+      steps {
+        container('kustomize') {
+          dir('service') {
+            sh '''
+            kustomize create -resource ./lb.yaml
+            while true;
+            do
+              export replicas=$(kubectl get deployments \
+              --selector=app=dashboard,deploy=$tag \
+              -o jsonpath --template="{.items[0].status.replicas}")
+              export ready=$(kubectl get deployments \
+              --selector=app=dashboard,deploy=$tag \
+              -o jsonpath --template="{.items[0].status.readyReplicas}")
+              echo "total replicas: $replicas, ready replicas: $ready"
+              if [ "$ready" -eq "$replicas" ]; then
+                echo "tag change and build deployment file by kustomize"
+                kustomize edit add label deploy:$tag -f
+                kustomize build . | kubectl apply -f -
+                echo "delete $tag deployment"
+                kubectl delete deployment --selector=app=dashboard,deploy!=$tag
+                kubectl get deployments -o wide
+                break
+              else
+                sleep 1
+              fi
+            done
+            '''
+          }
+        }
+      }
+    }
+  }
+}
+```
+* 3번 라인: 쿠버네티스의 파드를 젠킨스 작업이 수행되는에이전트로 사용한다. kubernetes { } 내부에서는 에이전트로 사용할 파드에 대한 명ㅇ세를 야믈의 형태로 정의할 수 있다.
+* 4~26 라인: 젠킨스의 에이전트로 만들어지는 파드의 명세이다. kubectl 명령어로 파드를 생성하기 위해 사용하는 매니패스트와 동일한 형태의 야믈로 사용할 수 있다. 이 야믈은 블루그린 배포를 위한 kustomize가 호스트에 설치돼 있지 않아도 사용할 수 있도록 kustomize가 설치된 컨테이너를 에이전트 파드에 포함하고 있으며 호스트에 설치된 kubectl 명령어를 사용하기 위해 호스트와 연결된 볼륨, 에이전트 파드가 쿠버네티스 클러스테 오브젝트를 배포하기 위해 사용할 서비스 어카운트인 jenkins가 미리 설정돼 있다.
+* 29~34 라인: 깃허브로부터 대시보드 소스 코드를 내려받는 단계이다. 이때 소스코드를 내려 받기위해 git 작업을 사용한다. git 작업에서 인자로 요구하는 git url의 주소는 `https://github.com/IaC-Source/blue-grenn.git` 으로 설정했고 Branch는 main으로 설정한다.
+* 35~45 라인: 실습에서는 젠킨스의 빌드 횟수마다 부여되는 번호에 따라 블루와 그린이 전환되는 것을 구현하기 위해 젠킨스 스크립트를 사용한다. 젠킨스 빌드 번호가 홀수 일때 tag 환경변수값을 blue로 설정하고 짝수일 때 green으로 설정한다.
+* 46~64 라인: 대시보드를 배포하기 위해 필요한 ConfigMap을 배포한 다음 디플로이먼트를 배포하는 단계이다. 이 단계에서는 배포 작업에 필요한 야믈 파일이 깃허브 저장소 하위 디플로이먼트 디렉터리에 위치해 있기 때문에 `dir('deployment')` 작업으로 디플로이먼트 디렉터리로 이동해 작업을 수행하도록 지정한다. 또한 디플로이먼트의 이미지, 이름, 레이블에 설정한 tag 환경 변수를 덧붙이는 것을 일일이 수정하지 않기 위해 kustomize 명령을 사용한다. 이 kustomize 명령을 사용하기 위해 container('kustomize') 작업으로 컨테이너 내부에서 sh 작업을 수행하도록 작성한다.
+* 65~95 라인: 블루그린 배포 전략을 위한 디플로이먼트 배포가 끝난 후 쿠버네티스 클러스어 외부에서 들어온 요청을 로드밸런서에서 보내줄 대상을 다시 설정하는 단계이다. 로드밸런서 설정에 필요한 야믈 파일이 깃허브 저장소 하위 service 디렉터리에 위치해 있기 때문에 `dir(service)` 작업으로 service 디렉터리로 이동해서 작업을 수행하도록 지정한다. service의 셀렉터 값들을 앞서 설정한 tag 환경 변수를 덧붙이는 작업도 kustomize 명령을 사용한다. 이 kustomize 명령을 사용하기 위해 container('kustomize') 작업을 컨테이너 내부에서 sh 작업을 통해 다음과 같이 설정한다.
+전 단계에서 배포한 디플로이먼트의 replicas 값과 readyReplicas의 값을 비교해 값이 같은 경우 배포가 완료됐다고 판단한다.
+그리고 로드밸런석 ㅏ트래픽을 전송하는 대상을 배포 완료된 디플로이먼트로 설정한 다음 배포 이전에 존재하는 디플로이먼트를 삭제해 배포 완료된 디플로이먼트로 트래픽을 보내준다.
+
+4. 이제 실제로 블루그린 배포 전략을 확인하기 위해 Pipeline 프로젝트 상세 화면에 Build Now 버튼을 눌러 1차로 블루그린 대시보드를 배포하고 배포가 완료된 것을 확인한다.
+5. 대시보드 디플로이먼트와 서비스가 정상적으로 배포 및 할당됐는지 확인한다. 
+```shell
+kubectl get deployments,service --selector=app=dashboard
+```
+```shell
+NAME                      READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/pl-blue   3/3     3            3           82s
+
+NAME                        TYPE           CLUSTER-IP     EXTERNAL-IP    PORT(S)        AGE
+service/pl-blue-green-svc   LoadBalancer   10.98.163.99   192.168.1.12   80:32393/TCP   66s
+```
+6. 블루그린 배포는 모든 배포가 완료되는 숙나 새롭게 배포한 대시보드로 전환된다.
+이를 확인하기 위해 kubectl get deployments --selector=app=dashboard -w를 우선 실행해놓고, 젠킨스 화면으로 이동해 Build Now 버튼을 눌러 두 번째 배포를 진행한다.
+```shell
+kubectl get deployments --selector=app=dashboard -w
+```
+7. kubectl get deployments,service --selector=app=dashboard로 대시보드가 다시 정상적으로 배포 및 할당됐는지 확인한다.
+```shell
+kubectl get deployments,service --selector=app=dashboard
+```
+```shell
+NAME                       READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/pl-green   3/3     3            3           60s
+
+NAME                        TYPE           CLUSTER-IP     EXTERNAL-IP    PORT(S)        AGE
+service/pl-blue-green-svc   LoadBalancer   10.98.163.99   192.168.1.12   80:32393/TCP   10m
+```
+8. 녹색 대시보드를 위한 2차 배포가 완료되고 기존 디플로이먼트인 pl-blue가 삭제된 것이 확인 됐다면, 파란색 대시보드가 보이는 웹 브라우저를 새로고침해 변경된 녹색 대시보드를 확인한다.
+10. 다음 실습에서 혼동을 방지하기 위해 젠킨스 홈 화면을 ㅗ이동한 후 Pipeline으로 생성한 모든 프로젝트를 삭제한다.
+11. 현재까지 생성된 것들로 인해 다음 실습에 영향을 받을 수 있다. 그리고 호스트 자원도 충분히 확보해야 하므로 실습에 사용했던 모든 오브젝트를 삭제한다.
+```shell
+kubectl delete deployments,service,configmap --selector=app=dashboard
+```
+```shell
+deployment.apps "pl-green" deleted
+service "pl-blue-green-svc" deleted
+configmap "dashboard-configmap" deleted
+```
 
 ## 5.5 젠킨스 플러그인을 통해 구현되는 GitOps
+지금까지 구성한 CI/CD의 거의 모든 기능은 사실 젠킨스의 플러그인을 통해 이루어진 것이다.
+현업에서는 젠킨스의 단일  플러그인으로 CI/CD를 구성하는 것이 아니라 여러 플러그인을 조합해 현재 업무에 맞는 형태로 만들어서 사용한다.
+젠킨스 플러그인은 주로 젠킨스 플러그인 홈페이지에서 검색해 내용을 살펴보고 이를 조합는 방식을 취한다.
+
+제공되는 플러그인은 다음과 같이 구분된다.
+* Platforms: 웹 애플리케이션이 아닌 다른 플랫폼에서 작동하는 애플리케이션 빌드를 위한 플러그인 종류
+* User Interface: 젠킨스의 기본 UI 이외의 확장 UI를 적용하기 위한 플러그인 카테고리
+* Administration: LDAP, 젠킨스 클러스터 관리 등 젠킨스 자체 관리에 필요한 플러그인
+* Source code management: 깃허브 및 깃랩과 같은 소스 코드 저장소의 연결이나 관리를 위한 플러그인 카테고리이다.
+* Build management: CI/CD 단계에 추가적으로 사용할 할 수 있는 플러그인 종류
+
+따라서 이번에는 쿠버네티스용 지속적 배포, 슬랙 알림, 변경 내용 비교 총 3개의 플러그인을 조합해 젠킨스에 GitOps를 구현해 보겠다.
+그런데 GitOps는 무엇일까? GitOps는 Git과 Ops(Operation)의 합성어로 깃을 통해 모든 것을 선언적으로 깃허브 저장소와 같은 SCM에 업데이트하면 오퍼레이터가 변경 부분을 감지해 대상 시스템을 배포하는 것이다.
+
+GitOps를 이용하면 다음과 같은 이점을 누릴 수 있다.
+* 깃허브 저장소의 내용과 실제 사용 및 운영 환경의 내용을 동일하게 가져갈 수 있다.
+이를 통해 깃허브 저장소로 모든 내용을 단일화해 관리하고 히스토리도 관리할 수 있으며 문제가 생기면 빠르게 복원할 수 있다.
+* 배포를 표준화해 자동으로 배포되도록 할 수 있다. 배포 과정을 미리 정의해 깃허브 저장소에 변경된 내용을 선언만 하면 모든 배포가 자동으로 진행된다.
+* 사람의 실수를 줄일 수 있다. 모든 배포 과정은 자동화되므로 사람마다 다르게 행동해 발생하는 실수를 방지하고 더욱 견고한 시스템을 만들 수 있다.
+
+### 5.5.1 쿠버네티스 환경에 적합한 선언적인 배포 환경
+지금까지 젠킨스를 통한 쿠버네티스 배포에는 cluster-admin 역할을 가지고 있는 jenkins 서비스 어카운트를 사용해 쿠버네티스 오브젝트를 배포했다.
+이렇게 설정된 jenkins 서비스 어카운트를 통해서 현재 쿠버네티스 클러스터에 모든 오브젝트를 배포하는 것은 가능하나, 외부에 있는 쿠버네티스 클러스터에는 가지고 있는 권한이 없기 때문에
+배포가 진행되지 않는다.
+
+따라서 외부 클러스터에 접근 하려면 쿠버설정(kubeconfig) 파일을 이용해 외부 클러스터의 API 서버로 접근한 다음 오브젝트를 배포해야 한다.
+젠킨스 에이전트 파드에서 쿠버설정 파일을 내려받아 바로 사용하는 것은 보안적으로 문제가 있다.
+따라서 쿠버설정 파일을 젠킨스 컨트롤러에서 관리하고 상황에 따라 필요한 권한만을 제공하는 기능이 필요한데 쿠버네티스용 지속적 배포 플러그인을 사용해서 이를 구현할 수 있다.
+
+GitOps를 사용한다는 것은 단일 클러스터에도 유용하지만 기본적으로 여러 개의 목적을 가지는 다수의 클러스터 환경을 사용하는 경우가 많다.
+효과적으로 GitPos 구현을 위한 첫 번째 단계로 쿠버네티스용 지속적 배포 플러그인을 설치해 어떻게 클러스터의 오브젝트 관리 권한을 가지고 오는지 확인해보겠다.
+GitOps의 중요한 기능중 하나인 '변화감지'는 젠킨스의 기본 플러그인 Poll SCM을 통해 구현하겠다.
+실습을 진행하기전 현재 테스트 환경은 다수의 클러스터 환경이 아니기 때문에 단일 클러스터 환경에서 쿠버설정 파일을 읽어들이는 실습으로 진행하겠다.
+
+1. 깃허브에서 repository를 생성한다.
+2. 저장소 생성 이후에 깃허브 저장소 주소를 복사한다. 이후 생성한 매니페스트를 푸시하기 위해 사용되는 주소이다.
+3. 다음으로 GitOps의 내용을 저장할 디렉터리를 m-k8s 홈 디렉터리에 생성한다.
+```shell
+mkdir ~/gitops
+cd ~/gitops
+```
+4. gitops 디렉터리에서 git init 명령을 사용해 깃 관련 작업을 할 수 있또록 준비한다. 명령을 실행한 이후 깃 작업 내용을 저장하는 .git 디렉터리가 생성된 것을 확인할 수 있다.
+```shell
+git init
+```
+```shell
+Initialized empty Git repository in /root/gitops/.git/
+```
+
+5. 깃을 통해 원격 저장소 파일들을 저장할 때는 작업자 이름, 작업자 이메일 주소 등을 설정하는게 좋다. 또한 현재 환경에서 깃허브 저장소로 여러 번 푸시를 하게 되면 푸시할 때마다 깃허브 사용자 이름과 비밀번호를 요구하기 때문에 자격 증명 저장소를 이용해 번거로운 상황이 발생하지 않도록 자격 증명 헬퍼를 설정해 자격 증명이 영구적으로 저장되도록 하겠다.
+```shell
+git config --global user.name "<사용자 이름>"
+git config --global user.email "<사용자 이메일>"
+git config --global credential.helper "store --file ~/.git-cred"
+```
+
+6. 원격 저장소에 작업한 파일들을 깃허브 저장소에 업로드 할 수 있도록 저장소의 주소를 추가한다.
+여기서 origin은 사용자의 것허브 저장소 주소에 대한 또 다른 이름(별칭)이다.
+```shell
+git remote add origin <사용자의 깃허브 저장소 주소>
+```
+
+7. 젠킨스에서 선언적으로 쿠버네티스 오브젝트를 배포하기 위해서 사전에 구성해둔 파일들을 홈 디렉터리 밑에 gitops 디렉터리로 복사한다.
+```shell
+cp ~/_Book_k8sInfra/ch5/5.5.1/* ~/gitops/
+```
+
+8. 사전에 구성해놓은 Jenkinsfile에는 쿠버네티스 배포를 위한 설정이 이미 구현돼 있다. 하지만 깃허브 저장소는 개별 사용자에 맞는 설정이 필요하므로 sed 명령을 이용해 깃허브 저장소를 변경하겠다.
+기존에 사용했던 sed는 s/변경 대상/변경할 값/를 사용했지만 변경 할 값에 /(슬래시)가 포함돼 있어 깃허브 저장소 주소로 변환되지 않는다. 그래서 /(슬레시)를 ,(쉼표)로 대체해 깃허브 저장소 주소가 정상적으로 변환되도록 하자.
+```shell
+sed -i 's,Git-URL,<사용자의 깃허브 저장소 주소>,g' Jenkinsfile
+```
+
+9. 이제 git 파일들을 추적할 수 있도록 git add . 명령으로 파일들을 등록하겠다.
+```shell
+git add .
+```
+
+10. 추가한 내용을 커밋하기 전에 우리가 앞서 설정한 값들이 제대로 설정됐는지 git config --list로 확인하겠다.
+```shell
+git config --list
+```
+
+11. 추가한 파일들을 푸시하기 위해 git commit 명령으로 변경사항을 저장하겠다.
+```shell
+git commit -m "init commit"
+```
+
+12. 깃허브 저장소로 푸시하기 위해 업로드되는 브랜치를 git branch 명령으로 설정해야 한다. `-M(Move)` 브랜치 이름을 바꾸는 옵션이고 main 브랜치는 깃허브의 기본 브랜치 이름이다.
+```shell
+git branch -M main
+```
+
+13. 브랜치를 설정했다면 이제 gitops 디렉터리에 있는 파일드을 git push 명령으로 깃허브 저장소에 푸시하겠다.
+이때 사용하는 origin은 깃허브 저장소의 주소를 의미하며 이에 대한 옵션인 `-u(--set-upstream)`은 로컬 브랜치에서 원격 저장소로 업로드하는 것을 의미한다.
+
+14. 깃허브 저장소로 첫 푸시가 완료된 후, 깃허브 저장소에 파일들이 정상적으로 생성됐는지 확인한다.
+
+15. 쿠버설정 파일을 안전하게 관리하기 위해 쿠버네티스용 지속적 배포 플러그인을 설치하겠다.
+`젠킨스 홈 화면 > 젠킨스 관리 > 플러그인 관리 > 설치 가능`으로 이동한다. `kubernetes Continuous Deploy` 플러그인을 설치한다.
+
+16. 설치가 완료 되면 `젠킨스 홈화면 > 젠킨스 관리 > Manage Credentials` 메뉴로 이동한다.
+
+17. 쿠버네티스용 지속적 배포 플러그인이 사용할 새로운 자격 증명 정보를 추가하기 위해 (global) 버튼을 누른다.
+
+18. 쿠버설정 파일에 대한 자격 증명을 가져오려면 헌재 쿠버설정 파일이 있는 마스터 노드에 접속 권한이 있어야 한다. `Add Credinetials` 버튼을 눌러 마스터 노드에 대한 자격 증명을 설정한다.
+
+19. 마스터 노드 자격 증명이 m-k8s-ssh라는 이름으로 등록된 것을 확인하고, Add Credentials을 눌러 쿠버설정 파일에 대한 자격 증명을 추가한다.
+    * Kind: 자격 증명 종류를 선택하는 메뉴이다. 쿠버네티스용 지속적 배포 플러그인이 사용할 쿠버설정 파일을 등록하기 위해 kubernetes configuration (kubeconfig)을 선택한다.
+    * Scope: 자격 증명이 적용되는 범위를 정한다. 젠킨스 전역에서 자격증명을 사용할 수 있게 Global을 선택한다.
+    * ID: 자격 증명을 사용할 때 식별하기 위한 값이다. kubeconfig로 작성한다.
+    * Description: 자격 증명에 대한 간단한 설명을 작성할 수 있다. kubeconfig get from master node를 입력한다.
+    * Kubeconfig: 쿠버설정 파일을 가져오는 방법을 설정한다. 마스터 노드에 존재하는 kubeconfig를 가져오기 위해 From a file on the Kubernetes master node를 선택한다.
+    * Server: 쿠버설정 파일이 존재하는 서버의 IP를 입력하는 곳이다. 마스터 노드의 IP를 입력한다.
+    * SSH Credeintials: 마스터 노드에 접근하기 위한 자격 증명을 선택할 수 있다. 
+    * File: 마스터 노드에 위치한 kubeconfig 위치를 설정하는 것이다. 경로는 .kube/config로 입력돼 있다.
+
+20. 선언적인 배포 환경을 위한 젠킨스 세부 구성이 완료 됐으므로 젠킨스 홈 화면으로 이동해 새로운 Item을 눌러 선언적인 배포 환경을 위한 프로젝트를 설정하자.
+
+21. Pipeline을 선택하고 dpy-pl-gitops를 입력한후 OK 버튼을 누른다.
+
+22. 깃허브 저장소에 변경 내용을 감시하기 위해 pipeline 프로젝트에서 지원하는 기능인 Poll SCM을 사용해 주기적으로 깃허브 저장소의 변경을 인식하게 한다.
+젠킨스에서 주기적으로 변경을 감시하기 위해 스케줄을 */10 * * * * 로 입력한다. 크론표현식으로 10분마다 변화가 있는지 확인하도록 설정한다.
+
+23. pipeline 프로젝트에서 사용할 소스 저장소를 구성한다. Definition은 Pipeline script from SCM으로 설정하고 SCM은 git으로 설정한다.
+Repository는 사용자의 깃허브 저장소 주소를 입력한다. Branch Specifier는 */main을 입력한다.
+
+이때 사용하는 Jenkinsfile은 다음과 같다
+```yaml
+pipeline {
+  agent: any
+  stages {
+    stage('git pull') {
+      steps {
+        // Git-URL: will replace by sed command before RUN
+        git url 'Git-URL', branch: 'main'
+      }
+    }
+    stage('k8s deploy') {
+      steps {
+        kubernetesDeploy(kubeconfigId: 'kubeconfig', configs: '*.yaml')
+      }
+    }
+  }
+}
+```
+* 4~9 라인: 깃허브 저장소로부터 야믈 파일을 내려받는다.
+* 10~15 라인: 미리 설정한 kubeconfig 자격 증명을 이용해 현재 내려받은 경로에 존재하는 야믈 파일들의 내용을 쿠버네티스 클러스터에 배포한다.
+
+25. dpy-pl-gitops 프로젝트를 저장하고 나서 약 10분을 기다리면 Build History 항목에서 첫번째 배포가 진행된 것을 확인할 수 있다.
+
+26. 배포 작업이 끝났다면 깃허브 저장소에 푸시한 야믈 파일이 쿠버네티스 클러스터에 적용 돼있는지 확인해보자. 푸시한 야믈 파일에는 gitops-nginx 디플로이먼트가 배포되고 파드 2개가 준비돼 있는 것을 확인한다.
+```shell
+kubectl get deployments
+```
+```shell
+NAME           READY   UP-TO-DATE   AVAILABLE   AGE
+gitops-nginx   2/2     2            2           89s
+jenkins        1/1     1            1           45h
+```
+
+27. 선언적인 배포 환경을 테스트 하기 위해 야믈 파일을 변경하고 깃허브 저장소에 푸시하면 쿠버네티스 클러스터에 이미 배포돼 있는 디플로이먼트도 변경되는지 확인하자.
+이를 위해 deployment.yaml을 sed 명령으로 편집해 replicas 개수를 2개에서 5개로 변경하겠다.
+```shell
+sed -i 's/replicas: 2/replicas: 5/' deployment.yaml
+git add .
+git commit -m "change replicas"
+git push -u origin main
+```
+
+28. 배포가 완료됐다면 쿠버네티스 클러스터에 깃허브 저장소에 푸시한 replicas 개수로 변경됐는지 확인한다.
+```shell
+kubectl get deployments
+```
+
+```shell
+NAME           READY   UP-TO-DATE   AVAILABLE   AGE
+gitops-nginx   5/5     5            5           15m
+jenkins        1/1     1            1           45h
+```
+
+
 
 ---
 # 6. 안정적인 운영을 완성하는 모니터링, 프로메테우스와 그라파나
