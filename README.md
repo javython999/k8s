@@ -4477,7 +4477,105 @@ gitops-nginx   5/5     5            5           15m
 jenkins        1/1     1            1           45h
 ```
 
+### 5.5.2 슬랙을 통해 변경 사항 알리기
+1. 젠킨스가 메세지를 보낼 수 있는 슬랙 채널을 생성한다.
+2. 슬랙 채널에 Jenkins CI 앱을 추가한다. 슬랙 채널 연동을 위한 토큰과 워크스페이스 도메인 주소 값을 확인한다.
+3. 슬랙에서 발급한 토큰은 매우 민감한 정보이므로 젠킨스 자격 증명에 토큰틀 등록한다.
+4. 젠킨스에서 슬랙으로 메세지를 보내기 위해 슬랙 알림 플러그인을 설치하고 시스템 설정 메뉴에 토큰과 워크스페이스 도메인 주소를 입력해 연동 작업을 마친다.
+5. 설정한 내용들을 통해 젠킨스로부터 슬랙 메세지가 정상적으로 발송되는지 확인해보자.
+이를 위해 사전에 구성한 Jenkinsfile로 기존의 Jenkinsfile을 덮어쓰겠다.
 
+변경된 Jenkinsfile 코드는 다음과 같다.
+```yaml
+pipeline {
+  agent any
+  stages {
+    stage('deploy start') {
+      steps {
+        slackSend(message: "Deploy ${env.BUILD_NUMBER} Started"
+        , color: 'good', tokenCredentialId: 'slack-key')
+      }
+    }
+    stage('git pull') {
+      steps {
+        git url: 'Git-URL', branch: 'main'
+      }
+    }
+    stage('k8s deploy') {
+      steps {
+        kubernetesDeploy(kubeconfigId: 'kubeconfig', configs: '*.yaml')
+      }
+    }
+    stage('deploy end') {
+      steps {
+        slackSend(message: """${env.JOB_NAME} ${env.BUILD_NUMBER} End""", color: 'good', tokenCredentialId: 'slack-key')
+      }
+    }
+  }
+}
+```
+* 4~9 라인: 작업 시작 이전에 슬랙 채널을 통해 몇 번째 빌드 작업의 시작인지 안내 메세지를 전달한다.
+* 22~27 라인: 작업이 끝날 때 슬랙으로 작업의 이름과 몇 번째 빌드 작업이 완료됐는지 메세지를 전달한다.
+
+6. 변경된 Jenkinsfile을 github에 push한다.
+7. github repository의 변경사항을 젠킨스가 감지하고 재배포가 완료되면 slack 채널에 배포 시작과 종료에 관한 메세지가 왔는지 확인한다. 
+
+### 5.5.3 배포 변경 사항을 자동 비교하기
+슬랙을 통해 단순히 배포에 관련된 메세지만 받는 것이 아니라 코드의 변경도 함께 확인할 수 있다면 더욱 좋을 것이다.
+`Last Changes`를 이용해 변경된 내용을 슬랙을 통해 확인할 수 있게 해보자.
+
+1. 젠킨스에 Last Changes 플러그인을 설치한다.
+2. 플러그인 설치가 완료되면 수정된 Jenkinsfile로 기존 Jenkinsfile을 덮어쓴다.
+```shell
+cp ~/_Book_k8sInfra/ch5/5.5.3/Jenkinsfile ~/gitops/
+```
+3. Last Changes 플러그인을 사용하기 위한 Jenkinsfile은 다음과 같다.
+```yaml
+pipeline {
+  agent any
+  stages {
+    stage('deploy start') {
+      steps {
+        slackSend(message: "Deploy ${env.BUILD_NUMBER} Started"
+        , color: 'good', tokenCredentialId: 'slack-key')
+      }
+    }
+    stage('git pull') {
+      steps {
+        git url: 'Git-URL', branch: 'main'
+      }
+    }
+    stage('k8s deploy') {
+      steps {
+        kubernetesDeploy(kubeconfigId: 'kubeconfig', configs: '*.yaml')
+      }
+    }
+    stage('send diff') {
+      steps {
+        script {
+          def publisher = LastChanges.getLastChangesPublisher "PREVIOUS_REVISION", "SIDE", "LINE", true, true, "", "", "", ""
+          publisher.publishLastChanges()
+          def htmlDiff = publisher.getHtmlDiff()
+          writeFile file: "deploy-diff-${env.BUILD_NUMBER}.html", text: htmlDiff
+        }
+        slackSend(message: """${env.JOB_NAME} #${env.BUILD_NUMBER} End
+        (<${env.BUILD_URL}/last-changes|Check Last changed>)"""
+        , color: 'good', tokenCredentialId: 'slack-key')
+    }
+  }
+}
+```
+* 24~29 라인: LastChanges 플러그인에서 Pipleline 프로젝트에서 사용하는 선언적 문법이 적용돼지 않기 때문에 또 다른 문법인 그루비 스크립트를 이용해 
+이전 배포와 현재 배포의 차이점을 찾아 html 파일로 작성하도록  구성한다. 이렇게 작성된 html은 슬랙 메세지로 전달되는 링크를 통해 확인하거나 프로젝트 상세 화면의 좌측 메뉴를 통해 확인할 수 있다.
+* 30~32 라인: 배포가 완료된 후 변경 사항을 확인할 수 있는 주소를 슬랙 메세지로 전달한다.
+
+4. 다음장 실습을 위해 사용했던 오브젝트 중 디플로이먼트만 삭제하겠다. CI/CD를 다루는 젠킨스는 쿠버네티스 인프라를 이루는 중요한 요소이므로 삭제하지 않고 진행하겠다.
+```shell
+kubectl delete deployment gitops-nginx
+```
+```shell
+deployment.apps "gitops-nginx" deleted
+```
 
 ---
 # 6. 안정적인 운영을 완성하는 모니터링, 프로메테우스와 그라파나
