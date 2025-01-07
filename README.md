@@ -4579,3 +4579,185 @@ deployment.apps "gitops-nginx" deleted
 
 ---
 # 6. 안정적인 운영을 완성하는 모니터링, 프로메테우스와 그라파나
+
+## 6.1 컨테이너 인프라 환경 모니터링하기
+모니터링 데이터를 프로메테우스로 수집하고 수집한 정보를 한곳에 모아 그라파나로 시각화 한다.
+
+### 6.1.1 모니터링 도구 선택하기
+* 프로메테우스: 사운드클라우드에서 자사 서비스의 모니터링을 위해 개발한 도구이다. 현재는 오픈 소스로 전환돼 CNCF에서 관리하며, 2018년 8월 졸업 프로젝트가 됐다.
+완전한 오픈 소스 모델을 선택해 사용자 층이 넓고 관련 자료가 많으며 각종 대시보드 도구나 메신저 등이 프로메테우스와의 연계를 지원하므로 직접 모니터링 시스템을 구축할 때 좋다.
+ 
+* 그라파나: 그라파나 랩스에서 개발했으며, 특정 소프트웨어에 종속되지 않은 독립적인 시각화 도구이다. 30가지 이상의 다양한 수집 도구 및 데이터베이스들과 연계를 지원한다.
+
+### 6.1.2 쿠버네티스 환경에 적합한 모니터링 데이터 수집 방법
+쿠버네티스 노드는 kubelet을 통해 파드를 관리하며, 파드의 CPU나 메모리 같은 메트릭 정보를 수집하기 위해 kubelet에 내장된 cAdvisor를 사용한다.
+cAdvisor는 구글이 만든 컨테이너 메트릭 수집 도구로, 쿠버네티스 클러스터 위에 배포된 여러 컨테이너가 사용하는 메트릭 정보를 수집한 후 이를 가공해 kubelet에 전달하는 역할을 한다.
+
+하지만 cAdvisor로 수집되고 kubelet으로 공개되는 데이터가 있어도 외부에서 이를 모아서 표현해주는 도구가 없다면 의미가 없다.
+그래서 메트릭 데이터를 수집하는 목적으로 메트릭서버를 설치해 HPA와 같은 기능을 구현하고 쿠버네티스 대시보드를 설치해 현재 상태를 확인 할 수 있게 한다.
+이렇게 서버에서 수집한 데이터로 여러 기능을 수행하도록 구성한 것을 리소스 메트릭 파이프라인이라고 한다.
+
+하지만 메트릭 서버는 집계한 데이터를 메모리에만 저장하므로 데이터를 영구적으로 보존할 수 없다. 
+그래서 메트릭 데이터를 저장 공간에 따로 저장하는 완전한 모니터링 파이프라인으로 구축하기를 권장한다.
+이러한 설계 방식을 반영한 도구가 프로메테우스이다.
+
+## 6.2 프로메테우스로 모니터링 데이터 수집과 통합하기
+프로메테우스는 많은 종류의 오브젝트를 설치한다.
+
+> 프로메테우스 서버
+
+프로메테우스의 주요 기능을 수행하는 요소로, 3가지 역할을 맡는다.
+1. 노드 익스포터 외 여러 대상에서 공개된 메트릭을 수집해오는 수집기.
+2. 수집한 시계열 메트릭 데이터를 저장하는 시계열 데이터베이스.
+3. 저장된 데이터를 질의하거나 수집 대상의 상태를 확인할 수있는 웹 UI
+
+> 노드 익스포터
+
+노드의 시스템 메트릭 정보를 HTTP로 공개하는 역할을 한다. 설치된 노드에서 특정 파일들을 읽고, 이를 프로메테우스 서버가 수집할 수있는 메트릭 데이터로 변환후
+노드 익스포터에서 HTTP 서버로 공개한다.
+
+> 쿠버 스테이트 메트릭
+
+API 서버로 쿠버네티스 클러스터의 여러 메트릭 데이터를 수집한 후, 이를 프로메테우스 서버가 수집할 수 있는 메트릭 데이터로 변환해 공개하는 역할을 한다.
+
+> 얼럿매니저
+
+얼럿매니저는 프로메테우스에 경보 규칙을 설정하고, 경보 이벤트가 발생하면 설정된 경보 메세지를 대상에게 전달하는 기능을 제공한다.
+
+> 푸시게이트웨이
+
+배치와 스케줄 작업 시 수행되는 일회성 작업들의 상태를 저장하고 모아서 프로메테우스가 주기적으로 가져갈 수 있도록 공개한다.
+
+### 6.2.1 헬름으로 프로메테우스 설치하기
+
+프로메테우스는 젠킨스처럼 헬름으로 쉽게 설치할 수 있다. 젠킨스 설치 때와 마찬가지로 NFS 디렉터리를 만들고, NFS 디렉터리를 쿠버네티스 환경에서 사용할 수 있도록
+PV와 PVC로 구성해야 한다. 접근 ID(사용자ID, 그룹ID)는 1000번으로 설정한다.
+
+1. 먼저 쿠버네티스에 프로메테우스를 설치하는데 필요한 사전 구성을 진행한다. 준비된 스크립트를 다음과 같이 실행한다.
+```shell
+~/_Book_k8sInfra/ch6/6.2.1/prometheus-server-preconfig.sh
+```
+```shell
+[Step 1/4] Task [Check helm status]
+[Step 1/4] ok
+[Step 2/4] Task [Check MetalLB status]
+[Step 2/4] ok
+[Step 3/4] Task [Create NFS directory for prometheus-server]
+/nfs_shared/prometheus/server created
+[Step 3/4] Successfully completed
+[Step 4/4] Task [Create PV,PVC for prometheus-server]
+persistentvolume/prometheus-server created
+persistentvolumeclaim/prometheus-server created
+[Step 4/4] Successfully completed
+```
+
+2. 프로메테우스 차트를 설치하려고 준비해둔 prometheus-install.sh를 실행해 모니터링에 필요한 3가지 프로메테우스 오브젝트를 설치한다.
+```shell
+~/_Book_k8sInfra/ch6/ch6.2.1/prometheus-install.sh
+```
+
+3. 프로메테우스 차트를 설치하고 나면 구성 요소인 프로메테우스 서버, 노드 익스포터, 쿠버 스테이트 메트릭이 설치됐는지 확인한다.
+이때 노드 익스포터가 여러 개인 이유는 노드마다 메트릭을 수집하기 위해 데몬셋으로 설치했기 때문이다.
+```shell
+kubectl get pods --selector=app=prometheus
+```
+```shell
+NAME                                             READY   STATUS    RESTARTS   AGE
+prometheus-kube-state-metrics-7bc49db5c5-6n9fz   1/1     Running   0          115s
+prometheus-node-exporter-29688                   1/1     Running   0          115s
+prometheus-node-exporter-88s9v                   1/1     Running   0          115s
+prometheus-node-exporter-rh8tp                   1/1     Running   0          115s
+prometheus-node-exporter-td57s                   1/1     Running   0          115s
+prometheus-server-6d77896bb4-95xs2               2/2     Running   0          115s
+```
+
+4. 프로메테우스 서버에서 제공하는 웹 UI로 접속하기 위한 프로메테우스 서비스의 IP 주소를 확인한다.
+```shell
+kubectl get service prometheus-server
+```
+NAME                TYPE           CLUSTER-IP      EXTERNAL-IP    PORT(S)        AGE
+prometheus-server   LoadBalancer   10.97.150.222   192.168.1.12   80:32121/TCP   2m53s
+
+### 6.2.2 프로메테우스의 웹 UI 다루기
+
+> Graph
+
+프로메테우스에 접속하면 가장 먼저 Graph(그래프) 메뉴를 만나게 된다. 그래프는 프로메테우스의 웹 UI에서 제공하는 가장 중요한 내용을 처리하는 페이지이다.
+1. 쿼리 입력기: 프로메테우스가 적재한 메트릭 데이터를 조회할 수 있는 표현식을 입력하는 곳이다. 이때 사용하는 표현식은 PromQL(Prometheus Query Language)라는 프로메테우스에서 제공하는 쿼리 언어이다.
+2. Execute: 쿼리 입력기에 입력한 PromQL을 실행하는 버튼이다.
+3. Graph: PromQL로 프로메테우스가 적재한 메트릭 데이터를 확인할 때 시각적으로 표현해주는 옵션이다.
+4. Console: PromQL로 추출된 메트릭 데이터를 보여주는 기본 옵션이다.
+5. Add Graph: 그래프 추가처럼 보이나 실제로는 쿼리 입력기를 하나 더 추가해 또 다른 메트릭을 확인하는 버튼이다.
+6. Remove Graph: 현재 쿼리 입력기를 제거하는 버튼이다.
+
+> Alert
+
+얼럿은 현재 프로메테우스 서버에 등록된 경보 규칙과 경보 발생여부를 확인할 수 있다.
+
+> Status
+
+Status를 클릭하면 하위 메뉴가 보인다. 각 하위 메뉴는 다음과 같은 내용을 제공한다.
+
+1. Runtime & Build Information: 프로메테우스 서버의 업타임 같은 런타임 관련 정보, 버전을 나타내는 빌드 정보 등 여러 정보를 확인할 수 있다.
+2. Command-Line Flags: 프로메테우스 서버가 실행될 때 인자로 입력 받았던 값을 보여준다.
+3. Configuration: 프로메테우스 서버가 구동될 때 설정된 값을 표시한다.
+4. Rules: 프로메테우스 서버에 등록된 다양한 규칙을 확인할 수 있다.
+5. Targets: 프로메테우스 서버가 수집해오는 대상의 상태를 확인할 수 있다.
+6. Service Discovery: 프로메테우스 서버가 서비스 디스커버리 방식으로 수집한 대상들에 대한 정보를 요약해 보여준다.
+
+### 6.2.3 서비스 디스커버리로 수집 대상 가져오기
+
+프로메테우스는 수집 대상을 자동으로 인식하고 필요한 정보를 수집한다.
+정보를 수집하려면 일반적으로 에이전트를 설정해야 하지만, 쿠버네티스는 사용자가 에이전트에 추가로 입력할 필요없이 자동으로 메트릭을 수집할 수 있다.
+이는 프로메테우스 서버가 수집 대상을 가져오는 방법인 서비스 디스커버리 덕분이다.
+
+1. 프로메테우스 서버는 컨피그맵에 기록된 내용을 바탕으로 대상을 읽어 온다.
+2. 읽어온 대상에 대한 메트릭을 가져오기 위해 API 서버에 정보를 요청한다.
+3. 요청을 통해 알아온 경로로 메트릭 데이터를 수집한다.
+
+서비스 디스커버리 방법은 대상에 따라 크게 2가지 경로로 나뉜다.
+쿠버네티스 API서버에 직접 연결돼 메트릭을 수집하는 cAdvisor와 API 서버가 경로를 알려주어 메트릭을 수집할 수 있는 에이전트이다.
+프로메테우스에서 에이전트는 보통 익스포터라 하므로 이후에는 익스포터로 부르겠다.
+
+> cAdvisor
+
+프로메테우스 웹 UI로 간다.
+
+1. cAdvisor로 수집된 메트릭은 container라는 이름으로 시작하므로 Graph 메뉴의 쿼리 입력기에 container_memory_usage_bytes를 입력하고 Execute 버튼을 누른다.
+2. 새로 디플로이먼트를 추가하면 자동으로 메트릭을 수집하는지 확인해보자. PromQL문에 추가할 파드의 이름을 검색하도록 `{container="nginx"}`를 추가하고 다시 Execute 버튼을 누른다.
+현재 nginx 디플로이먼트가 설치돼 있지 않으므로 no data가 나온다.
+3. nginx 디플로이먼트를 배포한다.
+```shell
+kubectl create deployment nginx --image=nginx
+```
+4. 웹 UI에서 Execute 버튼을 다시 눌러 배포한 nginx 디플로이먼트에 대한 메트릭이 자동으로 수집되는지 확인한다.
+메트릭이 자동으로 수집되는 것은 컨피그맵에 수집 대상이 지정됐기 때문이다.
+앞에서 수집된 내용은 다음 명령을 실행해 나온 내용중 56~68번 라인에 정의되 있다.
+```shell
+kubectl get configmap prometheus-server -o yaml | nl
+```
+```shell
+    56        job_name: kubernetes-nodes-cadvisor
+    57        kubernetes_sd_configs:
+    58        - role: node
+    59        relabel_configs:
+    60        - action: labelmap
+    61          regex: __meta_kubernetes_node_label_(.+)
+    62        - replacement: kubernetes.default.svc:443
+    63          target_label: __address__
+    64        - regex: (.+)
+    65          replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
+    66          source_labels:
+    67          - __meta_kubernetes_node_name
+    68          target_label: __metrics_path__
+```
+5. 이번에는 디플로이먼트를 삭제하면 더 이상 메트릭이 수집되지 않음을 확인한다. 배포된 nginx 디플로이먼트를 삭제하고 5~10분 정도 기다린다.
+```shell
+kubectl delete deployment nginx
+```
+6. 웹 UI에서 Execute 버튼을 다시 눌러 삭제한 nginx 디플로이먼트가 더 이상 검색되지 않는지를 확인한다.
+
+
+## 6.3 PromQL로 메트릭 데이터 추출하기
+## 6.4 그라파나로 모니터링 데이터 시각화 하기
+## 6.5 좀더 견고한 모니터링 환경 만들기
