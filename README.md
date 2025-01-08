@@ -4757,7 +4757,92 @@ kubectl delete deployment nginx
 ```
 6. 웹 UI에서 Execute 버튼을 다시 눌러 삭제한 nginx 디플로이먼트가 더 이상 검색되지 않는지를 확인한다.
 
+> 익스포터
+
+서비스 디스커버리에서 수집은 자동으로 이뤄지지만, 사실 익스포터는 사전 준비 작업 2가지를 해야 한다.
+첫 번째로 API 서버에서 등록돼 경로를 알 수 있게 해야 하고, 두 번째로 익스포터가 데이터를 프로메테우스 타입으로 노출해야 한다.
+
+1. API 서버에 등록될 구성이 포함된 nginx-status-annot.yaml을 배포한다.
+```shell
+kubectl apply -f ~/_Book_k8sInfra/ch6/6.2.3/nginx-status-annot.yaml
+```
+
+2. 프로메테우스 서버가 배포된 애플리케이션 API 서버에서 찾아 메트릭 수집을 하려면 애너테이션 설정이 가장 중요한데, 이는 매니페스트에 적용돼 있다.
+```shell
+cat ~/_Book_k8sInfra/ch6/6.2.3/nginx-status-annot.yaml | nl
+```
+```shell
+     1  apiVersion: apps/v1
+     2  kind: Deployment
+     3  metadata:
+     4    name: nginx
+     5  spec:
+     6    selector:
+     7      matchLabels:
+     8        app: nginx
+     9    template:
+    10      metadata:
+    11        labels:
+    12          app: nginx
+    13        annotations:
+    14          prometheus.io/port: "80"
+    15          prometheus.io/scrape: "true"
+    16      spec:
+    17        containers:
+    18        - name: nginx
+    19          image: sysnet4admin/nginx-status
+    20          ports:
+    21          - containerPort: 80
+```
+
+3. API 서버를 통해 배포된 nginx 디플로이먼트의 정보가 프로메테우스 서버에 등록됐는지 확인 한다.
+웹 UI에서 Status > Targets 선택한다. nginx 디플로이먼트는 등록됐지만, 메트릭이 수집되지 않는다.
+메트릭이 수집되지 않는 것은 메트릭이 공개되지 않았기 때문이다. 프로메테우스에서는 크게 두 가지 방법으로 메트릭을 공개할 수 있다.
+첫 번째는 Go, Rust, C#, Python, Java와 같은 프로그래밍 언어의 프로메테우스 SDK를 사용해 직접 메트릭을 공개하도록 작성하는 방법이다.
+두 번째는 이미 만들어둔 익스포터를 사용해 메트릭을 공개하는 방법이다.
+이미 만들어진 익스포터로 메트릭을 공개하겠다.
+
+4. nginx를 기준으로 설치했기 때문에 nginx에서 제공하는 nginx-prometheus-experter를 추가로 구성한 nginx-status-metrics.yaml을 배포한다.
+```shell
+kubectl apply -f ~/_Book_k8sInfra/ch6/6.2.3/nginx-status-metrics.yaml
+```
+nginx-prometheus-exporter는 멀티 컨테이너 패턴 중에 하나인 사이드카 패턴으로 작성돼 있다.
+
+5. 다시 프로메테우스 웹 UI로 가서 nginx 디플로이먼트에 대한 메트릭이 수집되고 있는지 확인한다.
+
+6. 다음 실습 진행을 위해 디플로이먼트를 삭제 한다.
+```shell
+kubectl delete -f ~/_Book_k8sInfra/ch6/6.2.3/nginx-status-metrics.yaml
+```
+
+### 6.2.4 노드 익스포터로 쿠버네티스 노드 메트릭 수집하기
+노드 익스포터는 익스포터 중에서도 쿠버네티스 노드의 상태 값을 메트릭을 추출하는 데 특화돼 있다.
+
+* /proc: 리눅스 운영 체제에서 구동 중인 프로세스들의 정보를 파일 시스템 형태로 연결한 디렉터리이다.
+디렉터리 안에는 현재 구동 중인 프로세스들의 프로세스 ID가 디렉터리 형태로 나타나며, 각 디렉터리 내부에 해당 프로세스에 대한 상태나 실행 환경에 대한 정보가 들어 있다.
+* /sys: 저장 장치, 네트워크 장치, 입출력 장치 같은 장치를 운영 체제에서 사용할 수 있도록 파일 시스템 형태로 연결한 디렉터리이다.
+기존에 /proc에 연결돼 있던 커널 장치 드라이버 등이 /proc에서 /sys로 분리됐다.
+
+1. 프로메테우스 웹 UI에서 Graph 메뉴로 이동한다. 쿼리 입력기에 node_cpu_seconds_total을 입력하고 Execute를 누른다.
+
+2. 누적된 CPU 상태 값을 봤으니 현재 상태에서 수집된 메트릭을 확인해 보겠다. node_memory_MemAvailable_bytes를 입력하고 Execute를 누른다.
+
+### 6.2.5 쿠버 스테이트 메트릭으로 쿠버네티스 클러스터 메트릭 수집하기
+
+1. 프로메테우스 쿼리 입력기에 kube_pod_container_status_restarts_total를 입력하고 Execute를 누르면 파드가 다시 시작하는 경우 이를 누적해 기록한 메트릭 데이터가 나온다.
+2. 이번에는 쿠버네티스 현재 상태를 알아보는 메트릭을 검색해 보겠다. 쿼리 입력기에 kube_service_created를 입력하고 Execute를 누른다.
 
 ## 6.3 PromQL로 메트릭 데이터 추출하기
-## 6.4 그라파나로 모니터링 데이터 시각화 하기
-## 6.5 좀더 견고한 모니터링 환경 만들기
+
+### 6.3.1 메트릭 데이터의 구조
+메트릭 데이터를 추출하려면 메트릭 데이터의 구조를 알아야 한다.
+간단한 예제를 메트릭 데이터의 구조를 살펴보자.
+쿼리 입력기에 up{job="prometheus"}를 입력한다.
+
+결과로 나온 메트릭 데이터를 보면 up이라는 메트릭 이름을 가지는 대상을 검색하고 그중 job="prometheus"라는 레이블 이름을 검색 조건에 추가한다.
+이를 일반적으로 필터링이라고 하고, 검색 조건에 맞는 메트릭 데이터가 존재하고 추출에 성공하면 1이라는 값을 표현한다.
+
+> 메트릭 값의 종류
+
+* 카운터: 누적된 값을 표현하는데 사용하는 메트릭타입이다. 카운터는 값을 중점적으로 보기보다 값이 얼마만큼 변했는지 변화율을 주로 확인한다.
+* 게이지: 특정 시점의 값을 표현하는 데 사용하는 메트릭 타입이다. 게이지는 시점별로 증가나 감소를 모두 표현할 수 있다.
